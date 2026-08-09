@@ -9,9 +9,9 @@ import (
 
 func HealthHandler(c *gin.Context) {
 	response := rest.HealthResponse{
-		Status:    "Server is healthy!",
+		Status:    "ok",
 		Timestamp: time.Now().Unix(),
-		Service:   "OSS Archive",
+		Service:   "lapis-archive-file-service",
 	}
 
 	rest.Success(c, response)

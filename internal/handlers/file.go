@@ -24,20 +24,27 @@ type FileResponse struct {
 	Size       int64  `json:"size"`
 }
 
+type FileUploadResponse struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	StorageKey string `json:"storage_key"`
+	FileSize   int64  `json:"file_size"`
+	FileType   string `json:"file_type"`
+	CreatedAt  string `json:"created_at"`
+}
+
 type FileDownloadResponse struct {
-	URL        string `json:"url"`
-	ExpiresIn  int    `json:"expires_in"`
-	Download   bool   `json:"download"`
+	URL       string `json:"url"`
+	ExpiresIn int    `json:"expires_in"`
+	Download  bool   `json:"download"`
 }
 
 type FileHandler struct {
-	storage storage.StorageInterface
+	storage storage.Storage
 }
 
-func NewFileHandler(storage storage.StorageInterface) *FileHandler {
-	return &FileHandler{
-		storage: storage,
-	}
+func NewFileHandler(storage storage.Storage) *FileHandler {
+	return &FileHandler{storage: storage}
 }
 
 func (h *FileHandler) UploadFile(c *gin.Context) {
@@ -48,67 +55,54 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// Generate unique ID and storage key
 	fileID := uuid.New().String()
 	storageKey := fmt.Sprintf("%s_%s", fileID, header.Filename)
-	
-	// Get content type
+
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 
-	// Upload to storage using storage key
-	err = h.storage.UploadFile(storageKey, file, header.Size, contentType)
-	if err != nil {
-		rest.InternalError(c, err)
+	if err := h.storage.UploadFile(c.Request.Context(), storageKey, file, header.Size, contentType); err != nil {
+		log.Printf("upload %s: %v", storageKey, err)
+		rest.InternalError(c, "Upload failed, try again")
 		return
 	}
 
-	// Return file info
-	fileData := map[string]interface{}{
-		"id":          fileID,
-		"name":        header.Filename,
-		"storage_key": storageKey,
-		"file_size":   header.Size,
-		"file_type":   contentType,
-		"created_at":  time.Now().Format(time.RFC3339),
-		"updated_at":  time.Now().Format(time.RFC3339),
-	}
-
-	rest.Success(c, fileData)
+	rest.Success(c, FileUploadResponse{
+		ID:         fileID,
+		Name:       header.Filename,
+		StorageKey: storageKey,
+		FileSize:   header.Size,
+		FileType:   contentType,
+		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
-
 func (h *FileHandler) GetFiles(c *gin.Context) {
-	files, err := h.storage.ListFiles()
+	ctx := c.Request.Context()
+
+	keys, err := h.storage.ListFiles(ctx)
 	if err != nil {
-		rest.InternalError(c, err)
+		log.Printf("list files: %v", err)
+		rest.InternalError(c, "Could not list files")
 		return
 	}
 
-	var fileList []FileResponse
-	for _, storageKey := range files {
-		// Extract ID and name from storage key (format: "timestamp_originalname.ext")
-		parts := strings.SplitN(storageKey, "_", 2)
-		var fileID, fileName string
-		
-		if len(parts) == 2 {
-			fileID = parts[0]
-			fileName = parts[1]
-		} else {
-			// Fallback for files without timestamp prefix
+	fileList := make([]FileResponse, 0, len(keys))
+	for _, storageKey := range keys {
+		fileID, fileName, found := strings.Cut(storageKey, "_")
+		if !found {
 			fileID = storageKey
 			fileName = filepath.Base(storageKey)
 		}
-		
-		// Get file size
-		fileSize, err := h.storage.GetFileSize(storageKey)
+
+		fileSize, err := h.storage.GetFileSize(ctx, storageKey)
 		if err != nil {
-			log.Printf("Failed to get file size for %s: %v", storageKey, err)
+			log.Printf("size %s: %v", storageKey, err)
 			fileSize = 0
 		}
-		
+
 		fileList = append(fileList, FileResponse{
 			ID:         fileID,
 			Name:       fileName,
@@ -117,51 +111,44 @@ func (h *FileHandler) GetFiles(c *gin.Context) {
 		})
 	}
 
-	rest.Success(c, FilesResponse{
-		Files: fileList,
-	})
+	rest.Success(c, FilesResponse{Files: fileList})
 }
 
 func (h *FileHandler) GetFile(c *gin.Context) {
-	filename := c.Param("id")
-	if filename == "" {
+	storageKey := c.Param("id")
+	if storageKey == "" {
 		rest.BadRequest(c, "File ID required")
 		return
 	}
 
 	forceDownload := c.Query("download") == "true"
 
-	// Generate presigned URL
-	presignedURL, err := h.storage.GetPresignedURL(filename, forceDownload)
+	presignedURL, err := h.storage.GetPresignedURL(c.Request.Context(), storageKey, forceDownload)
 	if err != nil {
+		log.Printf("presign %s: %v", storageKey, err)
 		rest.NotFound(c, "File not found")
 		return
 	}
 
 	rest.Success(c, FileDownloadResponse{
-		URL:        presignedURL,
-		Download:   forceDownload,
-		ExpiresIn:  3600,
+		URL:       presignedURL,
+		Download:  forceDownload,
+		ExpiresIn: int(storage.PresignTTL.Seconds()),
 	})
 }
 
 func (h *FileHandler) DeleteFile(c *gin.Context) {
-	filename := c.Param("id")
-	if filename == "" {
+	storageKey := c.Param("id")
+	if storageKey == "" {
 		rest.BadRequest(c, "File ID required")
 		return
 	}
 
-	err := h.storage.DeleteFile(filename)
-	if err != nil {
-		rest.InternalError(c, err)
+	if err := h.storage.DeleteFile(c.Request.Context(), storageKey); err != nil {
+		log.Printf("delete %s: %v", storageKey, err)
+		rest.InternalError(c, "Delete failed, try again")
 		return
 	}
 
-	rest.Success(c, FileResponse{
-		ID:         filename,
-		Name:       filename,
-		StorageKey: filename,
-		Size:       0,
-	})
+	rest.Success(c, gin.H{"deleted": storageKey})
 }

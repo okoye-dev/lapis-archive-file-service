@@ -8,15 +8,14 @@ import (
 )
 
 func main() {
-	// Load configuration
-	cfg, err := config.LoadConfig("configs/config.yaml")
+	cfg := config.Load()
+
+	srv, err := server.New(cfg)
 	if err != nil {
-		log.Fatalf("❌ Failed to load config: %v", err)
+		log.Fatalf("failed to start: %v", err)
 	}
 
-	// Create and start server
-	srv := server.New(cfg)
 	if err := srv.Start(); err != nil {
-		log.Fatalf("❌ Server error: %v", err)
+		log.Fatalf("server error: %v", err)
 	}
 }

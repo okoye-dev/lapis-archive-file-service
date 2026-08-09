@@ -13,33 +13,23 @@ type HealthResponse struct {
 }
 
 type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Error string `json:"error"`
+	Code  int    `json:"code"`
 }
 
-func Success(c *gin.Context, data interface{}) {
+func Success(c *gin.Context, data any) {
 	c.JSON(http.StatusOK, data)
-}
-
-func SuccessWithMessage(c *gin.Context, message string, data interface{}) {
-	response := map[string]interface{}{
-		"message": message,
-		"data":    data,
-	}
-	c.JSON(http.StatusOK, response)
 }
 
 func Error(c *gin.Context, code int, message string) {
 	c.JSON(code, ErrorResponse{
-		Error:   message,
-		Code:    code,
-		Message: message,
+		Error: message,
+		Code:  code,
 	})
 }
 
-func InternalError(c *gin.Context, err error) {
-	Error(c, http.StatusInternalServerError, err.Error())
+func InternalError(c *gin.Context, message string) {
+	Error(c, http.StatusInternalServerError, message)
 }
 
 func BadRequest(c *gin.Context, message string) {

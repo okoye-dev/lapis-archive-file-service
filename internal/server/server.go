@@ -15,42 +15,29 @@ import (
 	"github.com/okoye-dev/oss-archive/internal/storage"
 )
 
-// Server wraps the HTTP server with configuration
 type Server struct {
 	httpServer *http.Server
 	config     *config.Config
-	storage    storage.StorageInterface
+	storage    storage.Storage
 }
 
-// New creates a new server instance with the given configuration
-func New(cfg *config.Config) *Server {
-	// Initialize storage
+func New(cfg *config.Config) (*Server, error) {
 	s3Storage, err := storage.NewS3Storage(&cfg.S3)
 	if err != nil {
-		log.Fatalf("Failed to initialize storage: %v", err)
+		return nil, fmt.Errorf("initializing storage: %w", err)
 	}
 
 	return &Server{
 		config:  cfg,
 		storage: s3Storage,
-	}
+	}, nil
 }
 
-// SetupRoutes configures all the application routes
-func (s *Server) SetupRoutes() *gin.Engine {
+func (s *Server) Start() error {
 	gin.SetMode(s.config.Logging.Mode)
-	
 	router := gin.Default()
 	SetupRoutes(router, s.storage)
 
-	return router
-}
-
-// Start starts the HTTP server with graceful shutdown
-func (s *Server) Start() error {
-	router := s.SetupRoutes()
-
-	// Create HTTP server with timeouts from config
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.config.Server.Port),
 		Handler:      router,
@@ -59,51 +46,33 @@ func (s *Server) Start() error {
 		IdleTimeout:  time.Duration(s.config.Server.IdleTimeout) * time.Second,
 	}
 
-	// Start server in a goroutine
+	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("Server starting on port %d", s.config.Server.Port)
-		log.Printf("Timeouts - Read: %ds,   Write: %ds,   Idle: %ds", 
-			s.config.Server.ReadTimeout, 
-			s.config.Server.WriteTimeout, 
-			s.config.Server.IdleTimeout)
-		log.Printf("📝 Logging mode: %s", s.config.Logging.Mode)
-		
+		log.Printf("server listening on port %d", s.config.Server.Port)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
+			errCh <- err
 		}
 	}()
 
-	// Wait for interrupt signal to gracefully shutdown the server
-	return s.waitForShutdown()
-}
-
-// waitForShutdown handles graceful shutdown
-func (s *Server) waitForShutdown() error {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	
-	log.Println("🛑 Shutdown signal received...")
 
-	// Create shutdown context with timeout from config
+	select {
+	case err := <-errCh:
+		return err
+	case <-quit:
+	}
+
+	log.Println("shutdown signal received")
+
 	shutdownTimeout := time.Duration(s.config.Server.ShutdownTimeout) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	log.Printf("...Graceful shutdown timeout: %ds...", s.config.Server.ShutdownTimeout)
-	
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		return fmt.Errorf("server forced to shutdown: %w", err)
+		return fmt.Errorf("shutting down: %w", err)
 	}
 
-	log.Println("✅ Server shutting down... come back next time :)")
-	return nil
-}
-
-// Stop stops the server immediately
-func (s *Server) Stop() error {
-	if s.httpServer != nil {
-		return s.httpServer.Close()
-	}
+	log.Println("server stopped")
 	return nil
 }
