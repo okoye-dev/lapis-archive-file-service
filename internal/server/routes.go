@@ -26,16 +26,26 @@ func SetupRoutes(router *gin.Engine, store storage.Storage, cfg *config.ServerCo
 	maxUploadBytes := cfg.MaxUploadMB * 1024 * 1024
 	router.MaxMultipartMemory = 32 * 1024 * 1024
 
+	// JSON bodies are tiny; cap them so a giant payload can't be buffered
+	// into memory before binding fails.
+	const maxJSONBytes = 64 * 1024
+
 	api := router.Group("/api/v1")
 
 	api.GET("/health", handlers.HealthHandler)
 
-	fileHandler := handlers.NewFileHandler(store)
+	fileHandler := handlers.NewFileHandler(store, maxUploadBytes)
 	files := api.Group("/files")
 	files.GET("", fileHandler.GetFiles)
-	files.POST("", limitBody(maxUploadBytes), fileHandler.UploadFile)
+	files.POST("/presign-upload", limitBody(maxJSONBytes), fileHandler.PresignUpload)
 	files.GET("/:id", fileHandler.GetFile)
 	files.DELETE("/:id", fileHandler.DeleteFile)
+
+	shareHandler := handlers.NewShareHandler(store)
+	shareRoutes := api.Group("/shares")
+	shareRoutes.POST("", limitBody(maxJSONBytes), shareHandler.CreateShare)
+	shareRoutes.GET("/:slug", shareHandler.GetShare)
+	shareRoutes.POST("/:slug/unlock", limitBody(maxJSONBytes), shareHandler.UnlockShare)
 }
 
 func limitBody(maxBytes int64) gin.HandlerFunc {

@@ -1,17 +1,16 @@
 package handlers
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
@@ -56,64 +55,69 @@ type FileResponse struct {
 	Size       int64  `json:"size"`
 }
 
-type FileUploadResponse struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	StorageKey string `json:"storage_key"`
-	FileSize   int64  `json:"file_size"`
-	FileType   string `json:"file_type"`
-	CreatedAt  string `json:"created_at"`
-}
-
 type FileDownloadResponse struct {
 	URL       string `json:"url"`
 	ExpiresIn int    `json:"expires_in"`
 	Download  bool   `json:"download"`
 }
 
+type PresignUploadRequest struct {
+	Name        string `json:"name" binding:"required"`
+	Size        int64  `json:"size" binding:"required,gt=0"`
+	ContentType string `json:"content_type"`
+}
+
+type PresignUploadResponse struct {
+	UploadURL  string `json:"upload_url"`
+	StorageKey string `json:"storage_key"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	ExpiresIn  int    `json:"expires_in"`
+}
+
 type FileHandler struct {
-	storage storage.Storage
+	storage        storage.Storage
+	maxUploadBytes int64
 }
 
-func NewFileHandler(storage storage.Storage) *FileHandler {
-	return &FileHandler{storage: storage}
+func NewFileHandler(storage storage.Storage, maxUploadBytes int64) *FileHandler {
+	return &FileHandler{storage: storage, maxUploadBytes: maxUploadBytes}
 }
 
-func (h *FileHandler) UploadFile(c *gin.Context) {
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			rest.Error(c, http.StatusRequestEntityTooLarge, "File too large")
-			return
-		}
-		rest.BadRequest(c, "No file provided")
+func (h *FileHandler) PresignUpload(c *gin.Context) {
+	var req PresignUploadRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		rest.BadRequest(c, "name and size are required")
 		return
 	}
-	defer file.Close()
 
-	fileName := sanitizeFilename(header.Filename)
+	if req.Size > h.maxUploadBytes {
+		rest.Error(c, http.StatusRequestEntityTooLarge, "File too large")
+		return
+	}
+
+	fileName := sanitizeFilename(req.Name)
 	fileID := uuid.New().String()
 	storageKey := fmt.Sprintf("%s_%s", fileID, fileName)
 
-	contentType := header.Header.Get("Content-Type")
+	contentType := req.ContentType
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 
-	if err := h.storage.UploadFile(c.Request.Context(), storageKey, file, header.Size, contentType); err != nil {
-		log.Printf("upload %s: %v", storageKey, err)
-		rest.InternalError(c, "Upload failed, try again")
+	url, err := h.storage.GetPresignedUploadURL(c.Request.Context(), storageKey, req.Size, contentType)
+	if err != nil {
+		log.Printf("presign upload %s: %v", storageKey, err)
+		rest.InternalError(c, "Could not prepare upload")
 		return
 	}
 
-	rest.Success(c, FileUploadResponse{
+	rest.Success(c, PresignUploadResponse{
+		UploadURL:  url,
+		StorageKey: storageKey,
 		ID:         fileID,
 		Name:       fileName,
-		StorageKey: storageKey,
-		FileSize:   header.Size,
-		FileType:   contentType,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		ExpiresIn:  int(storage.UploadPresignTTL.Seconds()),
 	})
 }
 
@@ -129,6 +133,9 @@ func (h *FileHandler) GetFiles(c *gin.Context) {
 
 	fileList := make([]FileResponse, 0, len(keys))
 	for _, storageKey := range keys {
+		if strings.HasPrefix(storageKey, shares.KeyPrefix) {
+			continue
+		}
 		fileID, fileName, found := strings.Cut(storageKey, "_")
 		if !found {
 			fileID = storageKey
@@ -154,7 +161,7 @@ func (h *FileHandler) GetFiles(c *gin.Context) {
 
 func (h *FileHandler) GetFile(c *gin.Context) {
 	storageKey := c.Param("id")
-	if storageKey == "" {
+	if storageKey == "" || strings.Contains(storageKey, "/") {
 		rest.BadRequest(c, "File ID required")
 		return
 	}
@@ -177,7 +184,7 @@ func (h *FileHandler) GetFile(c *gin.Context) {
 
 func (h *FileHandler) DeleteFile(c *gin.Context) {
 	storageKey := c.Param("id")
-	if storageKey == "" {
+	if storageKey == "" || strings.Contains(storageKey, "/") {
 		rest.BadRequest(c, "File ID required")
 		return
 	}

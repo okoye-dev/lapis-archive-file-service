@@ -11,9 +11,9 @@ Next.js client  ──►  this service  ──►  S3-compatible bucket
 (lapis-archive-client)   Gin, :6060        (R2 / S3 / MinIO)
 ```
 
-- The client uploads files here and lists what's in the bucket.
-- Downloads never pass through this service: it returns a presigned URL and the bytes flow straight from the bucket to the recipient.
-- Share links and access codes are currently generated and checked in the client. This service is deliberately unaware of them for now.
+- File bytes never pass through this service. Uploads use a presigned PUT URL and downloads a presigned GET URL, so bytes flow directly between the client and the bucket.
+- The service only handles the control plane: issuing presigned URLs, listing/deleting, and storing small share records.
+- There is no database. Share records are small JSON objects kept in the bucket under `shares/<slug>.json`, with the access code stored only as a salted hash.
 
 ## API
 
@@ -23,18 +23,37 @@ All routes live under `/api/v1`.
 | --- | --- | --- |
 | GET | `/health` | Liveness check |
 | GET | `/files` | List files in the bucket |
-| POST | `/files` | Upload a file (multipart field: `file`) |
+| POST | `/files/presign-upload` | Get a presigned PUT URL, then upload straight to the bucket |
 | GET | `/files/:id` | Get a presigned download URL (add `?download=true` to force save-as) |
 | DELETE | `/files/:id` | Delete a file |
+| POST | `/shares` | Create a share for a file: returns a slug and a one-time-shown access code |
+| GET | `/shares/:slug` | Public share metadata (file name, size, expiry) — no code needed |
+| POST | `/shares/:slug/unlock` | Exchange the access code for a presigned download URL |
 
 `:id` is the file's storage key, which has the shape `<uuid>_<original-filename>`.
 
-Example:
+Uploading (bytes go straight to the bucket, never through this service):
 
 ```bash
-curl -F "file=@photo.jpg" http://localhost:6060/api/v1/files
-curl "http://localhost:6060/api/v1/files/<storage_key>?download=true"
+curl -s -X POST http://localhost:6060/api/v1/files/presign-upload \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"photo.jpg","size":123456,"content_type":"image/jpeg"}'
+# → {"upload_url":"...","storage_key":"<uuid>_photo.jpg",...}
+curl -X PUT --upload-file photo.jpg "<upload_url>" -H 'Content-Type: image/jpeg'
 ```
+
+Sharing:
+
+```bash
+curl -s -X POST http://localhost:6060/api/v1/shares \
+  -d '{"storage_key":"<uuid>_photo.jpg"}'
+# → {"slug":"aB3xY9kQ2m","code":"7K2P9Q",...}  code is only shown once
+curl -s -X POST http://localhost:6060/api/v1/shares/aB3xY9kQ2m/unlock \
+  -d '{"code":"7K2P9Q","download":true}'
+# → {"url":"<presigned download url>",...}
+```
+
+Share metadata lives in the bucket under `shares/<slug>.json` with the access code stored as a salted hash — there is no database. Unlock attempts are rate limited per slug and IP.
 
 Errors come back as `{"error": "message", "code": 500}` with a matching HTTP status.
 
@@ -79,6 +98,10 @@ Everything is configured through environment variables. Every value has a defaul
 | `S3_USE_SSL` | `true` | `false` for local MinIO |
 | `S3_BUCKET_NAME` | `oss-archive` | Bucket must already exist |
 | `S3_FORCE_PATH_STYLE` | `false` | `true` for MinIO |
+| `MAX_UPLOAD_MB` | `512` | Upload size cap, enforced in the presigned signature too |
+| `ALLOWED_ORIGINS` | `*` | Comma-separated CORS allowlist for browsers |
+
+For presigned uploads from a browser, the *bucket* needs CORS too (allow `PUT` from your client origin). MinIO in the dev compose file already permits this; on R2/S3 add a CORS rule to the bucket.
 
 The service never creates buckets. Create yours first (the dev compose file does this for MinIO automatically).
 
@@ -114,9 +137,10 @@ For Railway and friends: point it at the repo, set the `S3_*` variables, done.
 
 ## Roadmap
 
-- Server-side share records, so links work across devices
-- Access-code verification on the download path
-- File expiry (24h anonymous / 3 days with an email)
+- Gate `GET /files` and `DELETE /files/:id` behind an admin token (they are open today)
+- Client integration: presigned uploads + server-side shares end to end
+- Bucket lifecycle rules for physical deletion of expired files
+- Email delivery of access codes
 
 ## License
 

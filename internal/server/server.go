@@ -36,6 +36,14 @@ func New(cfg *config.Config) (*Server, error) {
 func (s *Server) Start() error {
 	gin.SetMode(s.config.Logging.Mode)
 	router := gin.Default()
+
+	// By default trust no proxies, so ClientIP() is the real TCP peer and
+	// X-Forwarded-For can't be spoofed to defeat rate limiting. Behind a
+	// known proxy (e.g. Railway), set TRUSTED_PROXIES to its CIDR(s).
+	if err := router.SetTrustedProxies(s.config.Server.TrustedProxies); err != nil {
+		return fmt.Errorf("setting trusted proxies: %w", err)
+	}
+
 	SetupRoutes(router, s.storage, &s.config.Server)
 
 	s.httpServer = &http.Server{

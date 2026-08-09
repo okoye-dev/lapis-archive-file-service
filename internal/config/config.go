@@ -21,6 +21,7 @@ type ServerConfig struct {
 	ShutdownTimeout int
 	MaxUploadMB     int64
 	AllowedOrigins  []string
+	TrustedProxies  []string
 }
 
 type LoggingConfig struct {
@@ -48,6 +49,7 @@ func Load() *Config {
 			ShutdownTimeout: getEnvInt("SHUTDOWN_TIMEOUT", 5),
 			MaxUploadMB:     int64(getEnvInt("MAX_UPLOAD_MB", 512)),
 			AllowedOrigins:  getEnvList("ALLOWED_ORIGINS", []string{"*"}),
+			TrustedProxies:  getEnvList("TRUSTED_PROXIES", nil),
 		},
 		Logging: LoggingConfig{
 			Level: getEnv("LOG_LEVEL", "info"),
