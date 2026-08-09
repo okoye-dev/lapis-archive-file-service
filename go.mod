@@ -1,4 +1,4 @@
-module github.com/okoye-dev/oss-archive
+module github.com/okoye-dev/lapis-archive-file-service
 
 go 1.24.1
 

@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	appconfig "github.com/okoye-dev/oss-archive/internal/config"
+	appconfig "github.com/okoye-dev/lapis-archive-file-service/internal/config"
 )
 
 const PresignTTL = time.Hour

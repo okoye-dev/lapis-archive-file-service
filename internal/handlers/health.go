@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/okoye-dev/oss-archive/internal/transport/rest"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
 
 func HealthHandler(c *gin.Context) {

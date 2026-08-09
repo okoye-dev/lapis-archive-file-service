@@ -9,8 +9,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/okoye-dev/oss-archive/internal/storage"
-	"github.com/okoye-dev/oss-archive/internal/transport/rest"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
 
 type FilesResponse struct {

@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 
-	"github.com/okoye-dev/oss-archive/internal/config"
-	"github.com/okoye-dev/oss-archive/internal/server"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/config"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/server"
 )
 
 func main() {

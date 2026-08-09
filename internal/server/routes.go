@@ -3,8 +3,8 @@ package server
 import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/okoye-dev/oss-archive/internal/handlers"
-	"github.com/okoye-dev/oss-archive/internal/storage"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/handlers"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 )
 
 func SetupRoutes(router *gin.Engine, store storage.Storage) {

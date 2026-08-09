@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/okoye-dev/oss-archive/internal/config"
-	"github.com/okoye-dev/oss-archive/internal/storage"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/config"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 )
 
 type Server struct {
