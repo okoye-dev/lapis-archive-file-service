@@ -1,25 +1,7 @@
-# Production Docker Compose (for Railway-like deployment)
 services:
   app:
     build: .
     ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - GIN_MODE=release
-
-  # PostgreSQL (if you need a database)
-  # postgres:
-  #   image: postgres:15
-  #   environment:
-  #     - POSTGRES_DB=oss-archive
-  #     - POSTGRES_USER=postgres
-  #     - POSTGRES_PASSWORD=postgres
-  #   ports:
-  #     - "5432:5432"
-  #   volumes:
-  #     - postgres_data:/var/lib/postgresql/data
-
-volumes:
-  minio_data:
-  # postgres_data:
+      - "6060:6060"
+    env_file:
+      - .env

@@ -1,64 +1,26 @@
-# Build stage for Go backend
-FROM golang:1.24-alpine AS go-builder
+FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
 
-# Copy go mod files
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-# Build the Go application
-RUN CGO_ENABLED=0 GOOS=linux go build -o main cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o file-service ./cmd
 
-# Build stage for Frontend
-FROM node:18-alpine AS frontend-builder
+FROM alpine:3.20
 
-WORKDIR /app
-
-# Install pnpm
-RUN npm install -g pnpm
-
-# Copy frontend files
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
-
-# Copy frontend source and build
-COPY frontend/ ./
-# Don't set NEXT_PUBLIC_DEV_SERVER_URL - let it default to /api for Railway
-RUN pnpm build
-
-# Final stage - single container with both services
-FROM node:18-alpine
+RUN apk add --no-cache ca-certificates && \
+    addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
-# Install pnpm for running Next.js
-RUN npm install -g pnpm
+COPY --from=builder /app/file-service ./
 
-# Copy Go binary
-COPY --from=go-builder /app/main ./
+USER app
 
-# Copy built frontend
-COPY --from=frontend-builder /app/.next ./frontend/.next
-COPY --from=frontend-builder /app/public ./frontend/public
-COPY --from=frontend-builder /app/package.json ./frontend/
-COPY --from=frontend-builder /app/node_modules ./frontend/node_modules
+EXPOSE 6060
 
-# Create startup script
-RUN echo '#!/bin/sh' > /app/start.sh && \
-    echo 'echo "Starting Go backend..."' >> /app/start.sh && \
-    echo './main &' >> /app/start.sh && \
-    echo 'echo "Starting Next.js frontend..."' >> /app/start.sh && \
-    echo 'cd frontend && PORT=3000 pnpm start &' >> /app/start.sh && \
-    echo 'wait' >> /app/start.sh
-
-RUN chmod +x /app/start.sh
-
-EXPOSE 3000
-
-# Start both services
-CMD ["/app/start.sh"]
+CMD ["./file-service"]
