@@ -36,7 +36,7 @@ func New(cfg *config.Config) (*Server, error) {
 func (s *Server) Start() error {
 	gin.SetMode(s.config.Logging.Mode)
 	router := gin.Default()
-	SetupRoutes(router, s.storage)
+	SetupRoutes(router, s.storage, &s.config.Server)
 
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.config.Server.Port),

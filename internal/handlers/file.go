@@ -1,8 +1,11 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +15,35 @@ import (
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
+
+const maxFilenameLength = 180
+
+func sanitizeFilename(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = path.Base(name)
+
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, name)
+
+	cleaned = strings.TrimSpace(cleaned)
+	if runes := []rune(cleaned); len(runes) > maxFilenameLength {
+		ext := path.Ext(cleaned)
+		if len([]rune(ext)) > 20 {
+			ext = ""
+		}
+		keep := maxFilenameLength - len([]rune(ext))
+		cleaned = string(runes[:keep]) + ext
+	}
+
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return "file"
+	}
+	return cleaned
+}
 
 type FilesResponse struct {
 	Files []FileResponse `json:"files"`
@@ -50,13 +82,19 @@ func NewFileHandler(storage storage.Storage) *FileHandler {
 func (h *FileHandler) UploadFile(c *gin.Context) {
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			rest.Error(c, http.StatusRequestEntityTooLarge, "File too large")
+			return
+		}
 		rest.BadRequest(c, "No file provided")
 		return
 	}
 	defer file.Close()
 
+	fileName := sanitizeFilename(header.Filename)
 	fileID := uuid.New().String()
-	storageKey := fmt.Sprintf("%s_%s", fileID, header.Filename)
+	storageKey := fmt.Sprintf("%s_%s", fileID, fileName)
 
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
@@ -71,7 +109,7 @@ func (h *FileHandler) UploadFile(c *gin.Context) {
 
 	rest.Success(c, FileUploadResponse{
 		ID:         fileID,
-		Name:       header.Filename,
+		Name:       fileName,
 		StorageKey: storageKey,
 		FileSize:   header.Size,
 		FileType:   contentType,

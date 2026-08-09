@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -18,6 +19,8 @@ type ServerConfig struct {
 	WriteTimeout    int
 	IdleTimeout     int
 	ShutdownTimeout int
+	MaxUploadMB     int64
+	AllowedOrigins  []string
 }
 
 type LoggingConfig struct {
@@ -43,6 +46,8 @@ func Load() *Config {
 			WriteTimeout:    getEnvInt("WRITE_TIMEOUT", 30),
 			IdleTimeout:     getEnvInt("IDLE_TIMEOUT", 120),
 			ShutdownTimeout: getEnvInt("SHUTDOWN_TIMEOUT", 5),
+			MaxUploadMB:     int64(getEnvInt("MAX_UPLOAD_MB", 512)),
+			AllowedOrigins:  getEnvList("ALLOWED_ORIGINS", []string{"*"}),
 		},
 		Logging: LoggingConfig{
 			Level: getEnv("LOG_LEVEL", "info"),
@@ -79,6 +84,24 @@ func getEnvInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+func getEnvList(key string, defaultValue []string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	parts := strings.Split(value, ",")
+	list := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			list = append(list, trimmed)
+		}
+	}
+	if len(list) == 0 {
+		return defaultValue
+	}
+	return list
 }
 
 func getEnvBool(key string, defaultValue bool) bool {
