@@ -32,6 +32,7 @@ type Share struct {
 	StorageKey     string    `json:"storage_key"`
 	FileName       string    `json:"file_name"`
 	FileSize       int64     `json:"file_size"`
+	OwnerEmail     string    `json:"owner_email,omitempty"`
 	RecipientEmail string    `json:"recipient_email,omitempty"`
 	CodeSalt       string    `json:"code_salt"`
 	CodeHash       string    `json:"code_hash"`
@@ -39,7 +40,7 @@ type Share struct {
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
-func New(storageKey, fileName string, fileSize int64, recipientEmail string, ttl time.Duration) (*Share, string, error) {
+func New(storageKey, fileName string, fileSize int64, ownerEmail, recipientEmail string, ttl time.Duration) (*Share, string, error) {
 	if ttl <= 0 || ttl > MaxTTL {
 		ttl = DefaultTTL
 	}
@@ -65,6 +66,7 @@ func New(storageKey, fileName string, fileSize int64, recipientEmail string, ttl
 		StorageKey:     storageKey,
 		FileName:       fileName,
 		FileSize:       fileSize,
+		OwnerEmail:     ownerEmail,
 		RecipientEmail: recipientEmail,
 		CodeSalt:       hex.EncodeToString(salt),
 		CodeHash:       hashCode(salt, code),

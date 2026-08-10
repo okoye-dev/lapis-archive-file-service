@@ -16,6 +16,7 @@ import (
 
 type CreateShareRequest struct {
 	StorageKey     string `json:"storage_key" binding:"required"`
+	OwnerEmail     string `json:"owner_email"`
 	RecipientEmail string `json:"recipient_email"`
 	TTLHours       int    `json:"ttl_hours"`
 }
@@ -82,8 +83,8 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		return
 	}
 
-	if len(req.RecipientEmail) > maxRecipientEmailLength {
-		rest.BadRequest(c, "Recipient email too long")
+	if len(req.RecipientEmail) > maxRecipientEmailLength || len(req.OwnerEmail) > maxRecipientEmailLength {
+		rest.BadRequest(c, "Email too long")
 		return
 	}
 
@@ -101,7 +102,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		fileName = req.StorageKey
 	}
 
-	share, code, err := shares.New(req.StorageKey, fileName, size, req.RecipientEmail, time.Duration(req.TTLHours)*time.Hour)
+	share, code, err := shares.New(req.StorageKey, fileName, size, req.OwnerEmail, req.RecipientEmail, time.Duration(req.TTLHours)*time.Hour)
 	if err != nil {
 		log.Printf("create share: %v", err)
 		rest.InternalError(c, "Could not create share")

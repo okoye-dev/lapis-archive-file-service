@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewAndVerify(t *testing.T) {
-	share, code, err := New("abc_photo.jpg", "photo.jpg", 1234, "", 0)
+	share, code, err := New("abc_photo.jpg", "photo.jpg", 1234, "", "", 0)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestNewAndVerify(t *testing.T) {
 }
 
 func TestVerifyNormalizesInput(t *testing.T) {
-	share, code, err := New("k_f.txt", "f.txt", 1, "", 0)
+	share, code, err := New("k_f.txt", "f.txt", 1, "", "", 0)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestVerifyNormalizesInput(t *testing.T) {
 }
 
 func TestVerifyExpired(t *testing.T) {
-	share, code, err := New("k_f.txt", "f.txt", 1, "", 0)
+	share, code, err := New("k_f.txt", "f.txt", 1, "", "", 0)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -59,24 +59,24 @@ func TestVerifyExpired(t *testing.T) {
 }
 
 func TestTTLBounds(t *testing.T) {
-	share, _, _ := New("k_f.txt", "f.txt", 1, "", 0)
+	share, _, _ := New("k_f.txt", "f.txt", 1, "", "", 0)
 	if got := share.ExpiresAt.Sub(share.CreatedAt); got != DefaultTTL {
 		t.Errorf("default ttl = %v, want %v", got, DefaultTTL)
 	}
 
-	share, _, _ = New("k_f.txt", "f.txt", 1, "", 30*24*time.Hour)
+	share, _, _ = New("k_f.txt", "f.txt", 1, "", "", 30*24*time.Hour)
 	if got := share.ExpiresAt.Sub(share.CreatedAt); got != DefaultTTL {
 		t.Errorf("oversized ttl = %v, want %v", got, DefaultTTL)
 	}
 
-	share, _, _ = New("k_f.txt", "f.txt", 1, "", 2*time.Hour)
+	share, _, _ = New("k_f.txt", "f.txt", 1, "", "", 2*time.Hour)
 	if got := share.ExpiresAt.Sub(share.CreatedAt); got != 2*time.Hour {
 		t.Errorf("custom ttl = %v, want 2h", got)
 	}
 }
 
 func TestStorageKeyFor(t *testing.T) {
-	share, _, _ := New("k_f.txt", "f.txt", 1, "", 0)
+	share, _, _ := New("k_f.txt", "f.txt", 1, "", "", 0)
 	key, err := StorageKeyFor(share.Slug)
 	if err != nil {
 		t.Fatalf("StorageKeyFor: %v", err)
@@ -103,7 +103,7 @@ func TestCodeAlphabetAvoidsAmbiguity(t *testing.T) {
 func TestUniqueness(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 200; i++ {
-		share, _, err := New("k_f.txt", "f.txt", 1, "", 0)
+		share, _, err := New("k_f.txt", "f.txt", 1, "", "", 0)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
