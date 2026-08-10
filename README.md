@@ -27,13 +27,13 @@ Next.js client  ──►  file service  ──►  S3-compatible bucket
 ## Features
 
 - **Zero-copy transfers** — file bytes never pass through the service; only presigned URLs do.
-- **No database required** for the core flow — share records live in the bucket.
+- **No database for direct transfers** — the presigned upload/download flow needs no database; shares are persisted in Postgres and every share endpoint returns 503 when `DATABASE_URL` is unset.
 - **Works with any S3-compatible store** — AWS S3, Cloudflare R2, or MinIO for local dev.
-- **Stateless** — easy to run, scale horizontally, and redeploy.
+- **Stateless core** — no local persistence; unlock rate limiting is in-memory per instance, so it isn't shared across horizontally-scaled replicas (see Roadmap).
 
 ## Quickstart (local)
 
-Requires Go 1.24+ and Docker.
+Requires Go 1.25+ and Docker.
 
 ```bash
 cp .env.local.example .env.local   # works as-is against local MinIO
@@ -62,7 +62,7 @@ All routes are under `/api/v1`.
 | `GET` | `/shares` | List the authenticated caller's shares (requires a bearer token) |
 | `DELETE` | `/shares/:slug` | Revoke one of the caller's shares (requires a bearer token) |
 
-`:id` is the storage key, shaped `<uuid>_<original-filename>`. Errors return `{"error": "...", "code": <status>}`. Share endpoints return `503` when `DATABASE_URL` is unset.
+`:id` is the storage key, shaped `<uuid>_<original-filename>`. Errors return `{"error": "...", "code": <status>}`. Share endpoints return `503` when `DATABASE_URL` is unset. `GET /shares` and `DELETE /shares/:slug` are mounted only when `AUTH_JWKS_URL` is configured; without it they return `404`.
 
 <details>
 <summary>Example: upload and share</summary>
@@ -95,6 +95,7 @@ Env-only (12-factor). Every value has a default; only storage credentials are re
 | `READ_TIMEOUT` / `WRITE_TIMEOUT` / `IDLE_TIMEOUT` | `30` / `30` / `120` | Seconds |
 | `SHUTDOWN_TIMEOUT` | `5` | Graceful shutdown window (seconds) |
 | `GIN_MODE` | `release` | `debug` for verbose logs |
+| `LOG_LEVEL` | `info` | Log verbosity |
 | `MAX_UPLOAD_MB` | `512` | Upload cap (signed into the presigned URL) |
 | `ALLOWED_ORIGINS` | `*` | Comma-separated CORS allowlist |
 | `TRUSTED_PROXIES` | *(none)* | CIDRs to trust for client IP; unset = trust none |
@@ -104,8 +105,8 @@ Env-only (12-factor). Every value has a default; only storage credentials are re
 | `S3_USE_SSL` | `true` | `false` for local MinIO |
 | `S3_BUCKET_NAME` | `oss-archive` | Must already exist |
 | `S3_FORCE_PATH_STYLE` | `false` | `true` for MinIO |
-| `DATABASE_URL` | *(empty)* | Any Postgres; for the planned history feature |
-| `AUTH_JWKS_URL` / `AUTH_ISSUER` | *(empty)* | JWKS endpoint + issuer for the planned auth feature |
+| `DATABASE_URL` | *(empty)* | Any Postgres; enables all share endpoints + the purge worker (unset = shares return 503) |
+| `AUTH_JWKS_URL` / `AUTH_ISSUER` | *(empty)* | JWKS endpoint + issuer for verifying bearer tokens; enables the history + revoke endpoints |
 
 The service never creates buckets — create yours first (the dev compose does this for MinIO).
 
