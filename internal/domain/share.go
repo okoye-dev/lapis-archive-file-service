@@ -1,4 +1,7 @@
-package shares
+// Package domain holds the core types and rules of Lapis Archive. It depends
+// on no other internal package, so every layer (storage, http, workers) can
+// import it and the models live in one findable place.
+package domain
 
 import (
 	"crypto/rand"
@@ -11,13 +14,13 @@ import (
 )
 
 const (
-	KeyPrefix    = "shares/"
 	slugLength   = 10
 	codeLength   = 6
 	saltLength   = 16
 	DefaultTTL   = 72 * time.Hour
 	MaxTTL       = 7 * 24 * time.Hour
 	slugAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	// No 0/O/1/I: avoids characters that are easy to misread when typed by hand.
 	codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 )
 
@@ -25,8 +28,10 @@ var (
 	ErrExpired     = errors.New("share expired")
 	ErrWrongCode   = errors.New("wrong access code")
 	ErrInvalidSlug = errors.New("invalid slug")
+	ErrNotFound    = errors.New("share not found")
 )
 
+// Share is a file made shareable behind a one-time access code.
 type Share struct {
 	Slug           string    `json:"slug"`
 	StorageKey     string    `json:"storage_key"`
@@ -41,7 +46,9 @@ type Share struct {
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
-func New(storageKey, fileName string, fileSize int64, ownerID, ownerEmail, recipientEmail string, ttl time.Duration) (*Share, string, error) {
+// NewShare builds a share and returns it alongside the plaintext access code,
+// which is shown to the creator once and never stored (only its salted hash).
+func NewShare(storageKey, fileName string, fileSize int64, ownerID, ownerEmail, recipientEmail string, ttl time.Duration) (*Share, string, error) {
 	if ttl <= 0 || ttl > MaxTTL {
 		ttl = DefaultTTL
 	}
@@ -79,6 +86,8 @@ func New(storageKey, fileName string, fileSize int64, ownerID, ownerEmail, recip
 	return share, code, nil
 }
 
+// Verify reports whether code matches (constant-time), tolerating spaces,
+// dashes, and lowercase in what the recipient typed.
 func (s *Share) Verify(code string) error {
 	if time.Now().UTC().After(s.ExpiresAt) {
 		return ErrExpired
@@ -102,24 +111,18 @@ func (s *Share) Expired() bool {
 	return time.Now().UTC().After(s.ExpiresAt)
 }
 
-func StorageKeyFor(slug string) (string, error) {
-	if !validSlug(slug) {
-		return "", ErrInvalidSlug
-	}
-	return KeyPrefix + slug + ".json", nil
-}
-
-func validSlug(slug string) bool {
+// ValidateSlug guards slugs taken from the URL before they reach storage.
+func ValidateSlug(slug string) error {
 	if len(slug) != slugLength {
-		return false
+		return ErrInvalidSlug
 	}
 	for _, r := range slug {
 		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 		if !ok {
-			return false
+			return ErrInvalidSlug
 		}
 	}
-	return true
+	return nil
 }
 
 func normalizeCode(code string) string {

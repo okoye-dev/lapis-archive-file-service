@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
-	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
@@ -66,9 +66,9 @@ const maxRecipientEmailLength = 320
 // at the consumer so it stays minimal and the concrete DBStore need not be an
 // interface itself.
 type ShareStore interface {
-	Create(ctx context.Context, s *shares.Share) error
-	GetBySlug(ctx context.Context, slug string) (*shares.Share, error)
-	ListByOwner(ctx context.Context, ownerID string) ([]*shares.Share, error)
+	Create(ctx context.Context, s *domain.Share) error
+	GetBySlug(ctx context.Context, slug string) (*domain.Share, error)
+	ListByOwner(ctx context.Context, ownerID string) ([]*domain.Share, error)
 	Delete(ctx context.Context, slug, ownerID string) error
 }
 
@@ -100,7 +100,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		return
 	}
 
-	if strings.HasPrefix(req.StorageKey, shares.KeyPrefix) || strings.Contains(req.StorageKey, "/") {
+	if strings.Contains(req.StorageKey, "/") {
 		rest.BadRequest(c, "Invalid storage key")
 		return
 	}
@@ -133,7 +133,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		}
 	}
 
-	share, code, err := shares.New(req.StorageKey, fileName, size, ownerID, ownerEmail, req.RecipientEmail, time.Duration(req.TTLHours)*time.Hour)
+	share, code, err := domain.NewShare(req.StorageKey, fileName, size, ownerID, ownerEmail, req.RecipientEmail, time.Duration(req.TTLHours)*time.Hour)
 	if err != nil {
 		log.Printf("create share: %v", err)
 		rest.InternalError(c, "Could not create share")
@@ -174,7 +174,7 @@ func (h *ShareHandler) UnlockShare(c *gin.Context) {
 
 	// Validate the slug before it becomes a rate-limiter map key, so an
 	// attacker can't seed the map with arbitrary-length garbage.
-	if _, err := shares.StorageKeyFor(slug); err != nil {
+	if err := domain.ValidateSlug(slug); err != nil {
 		rest.NotFound(c, "Share not found")
 		return
 	}
@@ -197,9 +197,9 @@ func (h *ShareHandler) UnlockShare(c *gin.Context) {
 
 	if err := share.Verify(req.Code); err != nil {
 		switch {
-		case errors.Is(err, shares.ErrExpired):
+		case errors.Is(err, domain.ErrExpired):
 			rest.Error(c, http.StatusGone, "This share has expired")
-		case errors.Is(err, shares.ErrWrongCode):
+		case errors.Is(err, domain.ErrWrongCode):
 			rest.Error(c, http.StatusForbidden, "Wrong access code")
 		default:
 			log.Printf("verify share %s: %v", share.Slug, err)
@@ -252,13 +252,13 @@ func (h *ShareHandler) RevokeShare(c *gin.Context) {
 	}
 
 	slug := c.Param("slug")
-	if _, err := shares.StorageKeyFor(slug); err != nil {
+	if err := domain.ValidateSlug(slug); err != nil {
 		rest.NotFound(c, "Share not found")
 		return
 	}
 
 	if err := h.store.Delete(c.Request.Context(), slug, user.ID); err != nil {
-		if errors.Is(err, shares.ErrNotFound) {
+		if errors.Is(err, domain.ErrNotFound) {
 			rest.NotFound(c, "Share not found")
 			return
 		}
@@ -270,15 +270,15 @@ func (h *ShareHandler) RevokeShare(c *gin.Context) {
 	rest.Success(c, RevokeShareResponse{Revoked: slug})
 }
 
-func (h *ShareHandler) loadShare(c *gin.Context, slug string) (*shares.Share, bool) {
-	if _, err := shares.StorageKeyFor(slug); err != nil {
+func (h *ShareHandler) loadShare(c *gin.Context, slug string) (*domain.Share, bool) {
+	if err := domain.ValidateSlug(slug); err != nil {
 		rest.NotFound(c, "Share not found")
 		return nil, false
 	}
 
 	share, err := h.store.GetBySlug(c.Request.Context(), slug)
 	if err != nil {
-		if errors.Is(err, shares.ErrNotFound) {
+		if errors.Is(err, domain.ErrNotFound) {
 			rest.NotFound(c, "Share not found")
 		} else {
 			log.Printf("load share %s: %v", slug, err)
@@ -289,7 +289,7 @@ func (h *ShareHandler) loadShare(c *gin.Context, slug string) (*shares.Share, bo
 	return share, true
 }
 
-func toMeta(s *shares.Share) ShareMetaResponse {
+func toMeta(s *domain.Share) ShareMetaResponse {
 	return ShareMetaResponse{
 		Slug:           s.Slug,
 		FileName:       s.FileName,

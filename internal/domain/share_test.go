@@ -1,4 +1,4 @@
-package shares
+package domain
 
 import (
 	"errors"
@@ -8,9 +8,9 @@ import (
 )
 
 func TestNewAndVerify(t *testing.T) {
-	share, code, err := New("abc_photo.jpg", "photo.jpg", 1234, "", "", "", 0)
+	share, code, err := NewShare("abc_photo.jpg", "photo.jpg", 1234, "", "", "", 0)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewShare: %v", err)
 	}
 
 	if len(share.Slug) != slugLength {
@@ -32,9 +32,9 @@ func TestNewAndVerify(t *testing.T) {
 }
 
 func TestVerifyNormalizesInput(t *testing.T) {
-	share, code, err := New("k_f.txt", "f.txt", 1, "", "", "", 0)
+	share, code, err := NewShare("k_f.txt", "f.txt", 1, "", "", "", 0)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewShare: %v", err)
 	}
 
 	spaced := " " + strings.ToLower(code[:3]) + "-" + code[3:] + " "
@@ -44,9 +44,9 @@ func TestVerifyNormalizesInput(t *testing.T) {
 }
 
 func TestVerifyExpired(t *testing.T) {
-	share, code, err := New("k_f.txt", "f.txt", 1, "", "", "", 0)
+	share, code, err := NewShare("k_f.txt", "f.txt", 1, "", "", "", 0)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("NewShare: %v", err)
 	}
 	share.ExpiresAt = time.Now().UTC().Add(-time.Minute)
 
@@ -59,35 +59,31 @@ func TestVerifyExpired(t *testing.T) {
 }
 
 func TestTTLBounds(t *testing.T) {
-	share, _, _ := New("k_f.txt", "f.txt", 1, "", "", "", 0)
+	share, _, _ := NewShare("k_f.txt", "f.txt", 1, "", "", "", 0)
 	if got := share.ExpiresAt.Sub(share.CreatedAt); got != DefaultTTL {
 		t.Errorf("default ttl = %v, want %v", got, DefaultTTL)
 	}
 
-	share, _, _ = New("k_f.txt", "f.txt", 1, "", "", "", 30*24*time.Hour)
+	share, _, _ = NewShare("k_f.txt", "f.txt", 1, "", "", "", 30*24*time.Hour)
 	if got := share.ExpiresAt.Sub(share.CreatedAt); got != DefaultTTL {
 		t.Errorf("oversized ttl = %v, want %v", got, DefaultTTL)
 	}
 
-	share, _, _ = New("k_f.txt", "f.txt", 1, "", "", "", 2*time.Hour)
+	share, _, _ = NewShare("k_f.txt", "f.txt", 1, "", "", "", 2*time.Hour)
 	if got := share.ExpiresAt.Sub(share.CreatedAt); got != 2*time.Hour {
 		t.Errorf("custom ttl = %v, want 2h", got)
 	}
 }
 
-func TestStorageKeyFor(t *testing.T) {
-	share, _, _ := New("k_f.txt", "f.txt", 1, "", "", "", 0)
-	key, err := StorageKeyFor(share.Slug)
-	if err != nil {
-		t.Fatalf("StorageKeyFor: %v", err)
-	}
-	if key != KeyPrefix+share.Slug+".json" {
-		t.Errorf("key = %q", key)
+func TestValidateSlug(t *testing.T) {
+	share, _, _ := NewShare("k_f.txt", "f.txt", 1, "", "", "", 0)
+	if err := ValidateSlug(share.Slug); err != nil {
+		t.Errorf("ValidateSlug(%q): %v", share.Slug, err)
 	}
 
 	for _, bad := range []string{"", "short", "../../etc/passwd", "abc/def.js", strings.Repeat("a", 11)} {
-		if _, err := StorageKeyFor(bad); !errors.Is(err, ErrInvalidSlug) {
-			t.Errorf("StorageKeyFor(%q) = %v, want ErrInvalidSlug", bad, err)
+		if err := ValidateSlug(bad); !errors.Is(err, ErrInvalidSlug) {
+			t.Errorf("ValidateSlug(%q) = %v, want ErrInvalidSlug", bad, err)
 		}
 	}
 }
@@ -103,9 +99,9 @@ func TestCodeAlphabetAvoidsAmbiguity(t *testing.T) {
 func TestUniqueness(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 200; i++ {
-		share, _, err := New("k_f.txt", "f.txt", 1, "", "", "", 0)
+		share, _, err := NewShare("k_f.txt", "f.txt", 1, "", "", "", 0)
 		if err != nil {
-			t.Fatalf("New: %v", err)
+			t.Fatalf("NewShare: %v", err)
 		}
 		if seen[share.Slug] {
 			t.Fatalf("duplicate slug %q", share.Slug)

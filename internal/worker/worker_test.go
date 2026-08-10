@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 )
 
 type countingJob struct {
@@ -36,11 +36,11 @@ func TestRunnerTicksAndStops(t *testing.T) {
 }
 
 type fakeStore struct {
-	expired []*shares.Share
+	expired []*domain.Share
 	deleted []string
 }
 
-func (f *fakeStore) ListExpired(context.Context, int) ([]*shares.Share, error) {
+func (f *fakeStore) ListExpired(context.Context, int) ([]*domain.Share, error) {
 	return f.expired, nil
 }
 func (f *fakeStore) DeleteBySlug(_ context.Context, slug string) error {
@@ -63,7 +63,7 @@ func (f *fakeAuditor) Record(_ context.Context, action, _ string, _ any) error {
 }
 
 func TestPurgeDeletesAndAudits(t *testing.T) {
-	store := &fakeStore{expired: []*shares.Share{
+	store := &fakeStore{expired: []*domain.Share{
 		{Slug: "aaaaaaaaaa", StorageKey: "u1_a.txt"},
 		{Slug: "bbbbbbbbbb", StorageKey: "u2_b.txt"},
 	}}

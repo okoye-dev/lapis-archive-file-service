@@ -12,7 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
-	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 )
 
 // fakeStorage implements storage.Storage; it only tracks object sizes since
@@ -53,26 +53,26 @@ func (f *fakeStorage) GetPresignedUploadURL(_ context.Context, key string, _ int
 
 // memStore is an in-memory ShareStore.
 type memStore struct {
-	byslug map[string]*shares.Share
+	byslug map[string]*domain.Share
 }
 
-func newMemStore() *memStore { return &memStore{byslug: make(map[string]*shares.Share)} }
+func newMemStore() *memStore { return &memStore{byslug: make(map[string]*domain.Share)} }
 
-func (m *memStore) Create(_ context.Context, s *shares.Share) error {
+func (m *memStore) Create(_ context.Context, s *domain.Share) error {
 	m.byslug[s.Slug] = s
 	return nil
 }
 
-func (m *memStore) GetBySlug(_ context.Context, slug string) (*shares.Share, error) {
+func (m *memStore) GetBySlug(_ context.Context, slug string) (*domain.Share, error) {
 	s, ok := m.byslug[slug]
 	if !ok {
-		return nil, shares.ErrNotFound
+		return nil, domain.ErrNotFound
 	}
 	return s, nil
 }
 
-func (m *memStore) ListByOwner(_ context.Context, ownerID string) ([]*shares.Share, error) {
-	var out []*shares.Share
+func (m *memStore) ListByOwner(_ context.Context, ownerID string) ([]*domain.Share, error) {
+	var out []*domain.Share
 	for _, s := range m.byslug {
 		if s.OwnerID == ownerID {
 			out = append(out, s)
@@ -84,7 +84,7 @@ func (m *memStore) ListByOwner(_ context.Context, ownerID string) ([]*shares.Sha
 func (m *memStore) Delete(_ context.Context, slug, ownerID string) error {
 	s, ok := m.byslug[slug]
 	if !ok || s.OwnerID != ownerID {
-		return shares.ErrNotFound
+		return domain.ErrNotFound
 	}
 	delete(m.byslug, slug)
 	return nil
@@ -98,7 +98,7 @@ func setupRouter(files *fakeStorage, store ShareStore, asUser string) *gin.Engin
 
 	if asUser != "" {
 		router.Use(func(c *gin.Context) {
-			auth.SetUser(c, &auth.User{ID: asUser, Email: asUser + "@example.com"})
+			auth.SetUser(c, &domain.User{ID: asUser, Email: asUser + "@example.com"})
 			c.Next()
 		})
 	}

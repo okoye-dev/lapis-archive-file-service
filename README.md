@@ -146,10 +146,11 @@ cmd/
   main.go          service entrypoint
   migrate/         migration CLI
 internal/
+  domain/          core types + rules, no internal deps (Share, User) — the models
   config/          env-based configuration
   server/          HTTP server, routes, CORS, graceful shutdown
   handlers/        request handlers (files, shares, health)
-  shares/          share type + Postgres store
+  store/           Postgres share persistence
   auth/            JWKS bearer-token verification
   storage/         S3-compatible storage client
   worker/          periodic job runner + expiry purge

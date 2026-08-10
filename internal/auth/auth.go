@@ -9,15 +9,11 @@ import (
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
 
 const contextUserKey = "authUser"
-
-type User struct {
-	ID    string
-	Email string
-}
 
 type Verifier struct {
 	keyfunc jwt.Keyfunc
@@ -37,7 +33,7 @@ func NewVerifier(ctx context.Context, jwksURL, issuer string) (*Verifier, error)
 	return &Verifier{keyfunc: k.Keyfunc, issuer: issuer}, nil
 }
 
-func (v *Verifier) parse(tokenString string) (*User, error) {
+func (v *Verifier) parse(tokenString string) (*domain.User, error) {
 	opts := []jwt.ParserOption{jwt.WithValidMethods([]string{"RS256", "ES256"})}
 	if v.issuer != "" {
 		opts = append(opts, jwt.WithIssuer(v.issuer))
@@ -59,7 +55,7 @@ func (v *Verifier) parse(tokenString string) (*User, error) {
 	}
 	email, _ := claims["email"].(string)
 
-	return &User{ID: sub, Email: email}, nil
+	return &domain.User{ID: sub, Email: email}, nil
 }
 
 func bearerToken(c *gin.Context) string {
@@ -104,15 +100,15 @@ func (v *Verifier) Optional() gin.HandlerFunc {
 	}
 }
 
-func SetUser(c *gin.Context, u *User) {
+func SetUser(c *gin.Context, u *domain.User) {
 	c.Set(contextUserKey, u)
 }
 
-func UserFrom(c *gin.Context) (*User, bool) {
+func UserFrom(c *gin.Context) (*domain.User, bool) {
 	value, ok := c.Get(contextUserKey)
 	if !ok {
 		return nil, false
 	}
-	user, ok := value.(*User)
+	user, ok := value.(*domain.User)
 	return user, ok
 }

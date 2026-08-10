@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/okoye-dev/lapis-archive-file-service/internal/audit"
-	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 )
 
 const (
@@ -16,7 +16,7 @@ const (
 
 // ExpiredShareStore is the slice of the share store the purge job needs.
 type ExpiredShareStore interface {
-	ListExpired(ctx context.Context, limit int) ([]*shares.Share, error)
+	ListExpired(ctx context.Context, limit int) ([]*domain.Share, error)
 	DeleteBySlug(ctx context.Context, slug string) error
 }
 
