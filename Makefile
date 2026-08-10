@@ -1,4 +1,4 @@
-.PHONY: help dev dev-stop dev-logs run run-remote build test fmt vet check minio clean
+.PHONY: help dev dev-stop dev-logs run run-remote migrate build test fmt vet check prod prod-logs prod-stop minio clean
 
 help:
 	@echo "Lapis Archive File Service"
@@ -11,6 +11,7 @@ help:
 	@echo "  make dev          Start MinIO (local S3) in Docker"
 	@echo "  make run          Run the service against MinIO (.env.local)"
 	@echo "  make run-remote   Run the service against remote storage (.env)"
+	@echo "  make migrate      Apply DB migrations (also runs automatically on boot)"
 	@echo "  make dev-stop     Stop MinIO"
 	@echo "  make dev-logs     Tail MinIO logs"
 	@echo "  make minio        Open the MinIO console"
@@ -35,6 +36,9 @@ run:
 
 run-remote:
 	@export $$(cat .env | grep -v '^#' | xargs) && go run ./cmd
+
+migrate:
+	@export $$(cat .env.local | grep -v '^#' | xargs) && go run ./cmd/migrate
 
 dev-stop:
 	docker compose -f docker-compose.dev.yml down

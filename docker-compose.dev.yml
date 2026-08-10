@@ -43,7 +43,6 @@ services:
       - POSTGRES_DB=lapis
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d lapis"]
       interval: 10s

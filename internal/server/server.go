@@ -16,6 +16,7 @@ import (
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/config"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/handlers"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/migrate"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/worker"
@@ -46,6 +47,9 @@ func New(cfg *config.Config) (*Server, error) {
 		}
 		if err := pool.Ping(context.Background()); err != nil {
 			return nil, fmt.Errorf("pinging database: %w", err)
+		}
+		if err := migrate.Run(context.Background(), pool); err != nil {
+			return nil, fmt.Errorf("running migrations: %w", err)
 		}
 		pg := shares.NewDBStore(pool)
 		srv.pool = pool
