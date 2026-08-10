@@ -55,6 +55,10 @@ type FileResponse struct {
 	Size       int64  `json:"size"`
 }
 
+type DeleteFileResponse struct {
+	Deleted string `json:"deleted"`
+}
+
 type FileDownloadResponse struct {
 	URL       string `json:"url"`
 	ExpiresIn int    `json:"expires_in"`
@@ -124,35 +128,29 @@ func (h *FileHandler) PresignUpload(c *gin.Context) {
 func (h *FileHandler) GetFiles(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	keys, err := h.storage.ListFiles(ctx)
+	objects, err := h.storage.ListFiles(ctx)
 	if err != nil {
 		log.Printf("list files: %v", err)
 		rest.InternalError(c, "Could not list files")
 		return
 	}
 
-	fileList := make([]FileResponse, 0, len(keys))
-	for _, storageKey := range keys {
-		if strings.HasPrefix(storageKey, shares.KeyPrefix) {
+	fileList := make([]FileResponse, 0, len(objects))
+	for _, obj := range objects {
+		if strings.HasPrefix(obj.Key, shares.KeyPrefix) {
 			continue
 		}
-		fileID, fileName, found := strings.Cut(storageKey, "_")
+		fileID, fileName, found := strings.Cut(obj.Key, "_")
 		if !found {
-			fileID = storageKey
-			fileName = filepath.Base(storageKey)
-		}
-
-		fileSize, err := h.storage.GetFileSize(ctx, storageKey)
-		if err != nil {
-			log.Printf("size %s: %v", storageKey, err)
-			fileSize = 0
+			fileID = obj.Key
+			fileName = filepath.Base(obj.Key)
 		}
 
 		fileList = append(fileList, FileResponse{
 			ID:         fileID,
 			Name:       fileName,
-			StorageKey: storageKey,
-			Size:       fileSize,
+			StorageKey: obj.Key,
+			Size:       obj.Size,
 		})
 	}
 
@@ -195,5 +193,5 @@ func (h *FileHandler) DeleteFile(c *gin.Context) {
 		return
 	}
 
-	rest.Success(c, gin.H{"deleted": storageKey})
+	rest.Success(c, DeleteFileResponse{Deleted: storageKey})
 }

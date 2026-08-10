@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 )
 
 // fakeStorage implements storage.Storage; it only tracks object sizes since
@@ -32,12 +33,12 @@ func (f *fakeStorage) DeleteFile(_ context.Context, key string) error {
 	return nil
 }
 
-func (f *fakeStorage) ListFiles(_ context.Context) ([]string, error) {
-	keys := make([]string, 0, len(f.sizes))
-	for k := range f.sizes {
-		keys = append(keys, k)
+func (f *fakeStorage) ListFiles(_ context.Context) ([]storage.FileInfo, error) {
+	out := make([]storage.FileInfo, 0, len(f.sizes))
+	for k, size := range f.sizes {
+		out = append(out, storage.FileInfo{Key: k, Size: size})
 	}
-	return keys, nil
+	return out, nil
 }
 
 func (f *fakeStorage) GetFileSize(_ context.Context, key string) (int64, error) {
@@ -59,7 +60,7 @@ func (f *fakeStorage) GetPresignedUploadURL(_ context.Context, key string, _ int
 	return "https://bucket.example/upload/" + key, nil
 }
 
-// memStore is an in-memory shares.Store.
+// memStore is an in-memory ShareStore.
 type memStore struct {
 	byslug map[string]*shares.Share
 }
@@ -100,7 +101,7 @@ func (m *memStore) Delete(_ context.Context, slug, ownerID string) error {
 
 // setupRouter wires the handlers. If asUser is non-empty, an auth middleware
 // injects that user so the authenticated routes can be exercised.
-func setupRouter(files *fakeStorage, store shares.Store, asUser string) *gin.Engine {
+func setupRouter(files *fakeStorage, store ShareStore, asUser string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 

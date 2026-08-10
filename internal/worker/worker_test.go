@@ -22,7 +22,7 @@ func (j *countingJob) Run(context.Context) error {
 
 func TestRunnerTicksAndStops(t *testing.T) {
 	job := &countingJob{}
-	r := New(job)
+	r := New(nil, job)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	r.Start(ctx)

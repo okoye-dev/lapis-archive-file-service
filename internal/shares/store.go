@@ -11,19 +11,12 @@ import (
 
 var ErrNotFound = errors.New("share not found")
 
-type Store interface {
-	Create(ctx context.Context, s *Share) error
-	GetBySlug(ctx context.Context, slug string) (*Share, error)
-	ListByOwner(ctx context.Context, ownerID string) ([]*Share, error)
-	Delete(ctx context.Context, slug, ownerID string) error
-}
-
-type PostgresStore struct {
+type DBStore struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
-	return &PostgresStore{pool: pool}
+func NewDBStore(pool *pgxpool.Pool) *DBStore {
+	return &DBStore{pool: pool}
 }
 
 func nullable(s string) any {
@@ -33,7 +26,7 @@ func nullable(s string) any {
 	return s
 }
 
-func (p *PostgresStore) Create(ctx context.Context, s *Share) error {
+func (p *DBStore) Create(ctx context.Context, s *Share) error {
 	_, err := p.pool.Exec(ctx, `
 		insert into shares
 			(slug, owner_id, owner_email, recipient_email, storage_key,
@@ -70,7 +63,7 @@ func scanShare(row pgx.Row) (*Share, error) {
 const selectColumns = `slug, owner_id, owner_email, recipient_email, storage_key,
 	file_name, file_size, code_hash, code_salt, created_at, expires_at`
 
-func (p *PostgresStore) GetBySlug(ctx context.Context, slug string) (*Share, error) {
+func (p *DBStore) GetBySlug(ctx context.Context, slug string) (*Share, error) {
 	row := p.pool.QueryRow(ctx, `select `+selectColumns+` from shares where slug = $1`, slug)
 	s, err := scanShare(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -82,7 +75,7 @@ func (p *PostgresStore) GetBySlug(ctx context.Context, slug string) (*Share, err
 	return s, nil
 }
 
-func (p *PostgresStore) ListByOwner(ctx context.Context, ownerID string) ([]*Share, error) {
+func (p *DBStore) ListByOwner(ctx context.Context, ownerID string) ([]*Share, error) {
 	rows, err := p.pool.Query(ctx, `select `+selectColumns+`
 		from shares where owner_id = $1 order by created_at desc`, ownerID)
 	if err != nil {
@@ -101,7 +94,7 @@ func (p *PostgresStore) ListByOwner(ctx context.Context, ownerID string) ([]*Sha
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) ListExpired(ctx context.Context, limit int) ([]*Share, error) {
+func (p *DBStore) ListExpired(ctx context.Context, limit int) ([]*Share, error) {
 	rows, err := p.pool.Query(ctx, `select `+selectColumns+`
 		from shares where expires_at < now() order by expires_at asc limit $1`, limit)
 	if err != nil {
@@ -120,14 +113,14 @@ func (p *PostgresStore) ListExpired(ctx context.Context, limit int) ([]*Share, e
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) DeleteBySlug(ctx context.Context, slug string) error {
+func (p *DBStore) DeleteBySlug(ctx context.Context, slug string) error {
 	if _, err := p.pool.Exec(ctx, `delete from shares where slug = $1`, slug); err != nil {
 		return fmt.Errorf("delete share: %w", err)
 	}
 	return nil
 }
 
-func (p *PostgresStore) Delete(ctx context.Context, slug, ownerID string) error {
+func (p *DBStore) Delete(ctx context.Context, slug, ownerID string) error {
 	tag, err := p.pool.Exec(ctx, `delete from shares where slug = $1 and owner_id = $2`, slug, ownerID)
 	if err != nil {
 		return fmt.Errorf("delete share: %w", err)

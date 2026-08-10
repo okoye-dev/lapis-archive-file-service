@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -51,17 +52,35 @@ type UnlockShareResponse struct {
 	FileSize  int64  `json:"file_size"`
 }
 
+type SharesListResponse struct {
+	Shares []ShareMetaResponse `json:"shares"`
+}
+
+type RevokeShareResponse struct {
+	Revoked string `json:"revoked"`
+}
+
 const maxRecipientEmailLength = 320
 
+// ShareStore is the slice of the share store the handlers need, declared here
+// at the consumer so it stays minimal and the concrete DBStore need not be an
+// interface itself.
+type ShareStore interface {
+	Create(ctx context.Context, s *shares.Share) error
+	GetBySlug(ctx context.Context, slug string) (*shares.Share, error)
+	ListByOwner(ctx context.Context, ownerID string) ([]*shares.Share, error)
+	Delete(ctx context.Context, slug, ownerID string) error
+}
+
 type ShareHandler struct {
-	store     shares.Store
+	store     ShareStore
 	files     storage.Storage
 	perIP     *rateLimiter
 	perSlug   *rateLimiter
 	metaPerIP *rateLimiter
 }
 
-func NewShareHandler(store shares.Store, files storage.Storage) *ShareHandler {
+func NewShareHandler(store ShareStore, files storage.Storage) *ShareHandler {
 	return &ShareHandler{
 		store: store,
 		files: files,
@@ -222,7 +241,7 @@ func (h *ShareHandler) ListMine(c *gin.Context) {
 	for _, s := range list {
 		out = append(out, toMeta(s))
 	}
-	rest.Success(c, gin.H{"shares": out})
+	rest.Success(c, SharesListResponse{Shares: out})
 }
 
 func (h *ShareHandler) RevokeShare(c *gin.Context) {
@@ -248,7 +267,7 @@ func (h *ShareHandler) RevokeShare(c *gin.Context) {
 		return
 	}
 
-	rest.Success(c, gin.H{"revoked": slug})
+	rest.Success(c, RevokeShareResponse{Revoked: slug})
 }
 
 func (h *ShareHandler) loadShare(c *gin.Context, slug string) (*shares.Share, bool) {

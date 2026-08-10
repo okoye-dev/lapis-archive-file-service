@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -15,13 +16,20 @@ type Job interface {
 	Run(ctx context.Context) error
 }
 
+// RecordFunc persists one row of run history per execution (job, timing,
+// outcome) so runs are observable after the fact. It's a plain callback, not
+// an interface: there's only ever one hook, and this keeps the worker package
+// free of any database dependency. Optional; nil disables tracking.
+type RecordFunc func(ctx context.Context, job string, start, end time.Time, runErr error)
+
 type Runner struct {
-	jobs []Job
-	wg   sync.WaitGroup
+	jobs   []Job
+	record RecordFunc
+	wg     sync.WaitGroup
 }
 
-func New(jobs ...Job) *Runner {
-	return &Runner{jobs: jobs}
+func New(record RecordFunc, jobs ...Job) *Runner {
+	return &Runner{jobs: jobs, record: record}
 }
 
 // Start runs each job immediately, then on its own interval, until ctx is
@@ -54,19 +62,30 @@ func (r *Runner) loop(ctx context.Context, job Job) {
 	}
 }
 
-// runOnce executes a single pass with panic recovery and timing, so one job
-// misbehaving never takes down the runner or the process.
+// runOnce executes a single pass with panic recovery and timing, logs the
+// outcome, and records it, so one job misbehaving never takes down the runner
+// or the process.
 func (r *Runner) runOnce(ctx context.Context, job Job) {
+	start := time.Now()
+	err := safeRun(ctx, job)
+	end := time.Now()
+
+	if err != nil {
+		log.Printf("worker %s: failed after %s: %v", job.Name(), end.Sub(start), err)
+	} else {
+		log.Printf("worker %s: ran in %s", job.Name(), end.Sub(start))
+	}
+
+	if r.record != nil {
+		r.record(ctx, job.Name(), start, end, err)
+	}
+}
+
+func safeRun(ctx context.Context, job Job) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("worker %s: panic recovered: %v", job.Name(), p)
+			err = fmt.Errorf("panic: %v", p)
 		}
 	}()
-
-	start := time.Now()
-	if err := job.Run(ctx); err != nil {
-		log.Printf("worker %s: failed after %s: %v", job.Name(), time.Since(start), err)
-		return
-	}
-	log.Printf("worker %s: ran in %s", job.Name(), time.Since(start))
+	return job.Run(ctx)
 }

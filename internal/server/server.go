@@ -15,6 +15,7 @@ import (
 	"github.com/okoye-dev/lapis-archive-file-service/internal/audit"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/config"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/handlers"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/worker"
@@ -24,7 +25,7 @@ type Server struct {
 	httpServer *http.Server
 	config     *config.Config
 	storage    storage.Storage
-	shareStore shares.Store
+	shareStore handlers.ShareStore
 	verifier   *auth.Verifier
 	pool       *pgxpool.Pool
 	runner     *worker.Runner
@@ -46,15 +47,18 @@ func New(cfg *config.Config) (*Server, error) {
 		if err := pool.Ping(context.Background()); err != nil {
 			return nil, fmt.Errorf("pinging database: %w", err)
 		}
-		pg := shares.NewPostgresStore(pool)
+		pg := shares.NewDBStore(pool)
 		srv.pool = pool
 		srv.shareStore = pg
-		srv.runner = worker.New(worker.PurgeExpiredShares{
-			Store:   pg,
-			Objects: s3Storage,
-			Auditor: audit.NewPostgresAuditor(pool),
-		})
-		log.Println("shares: postgres store enabled")
+		srv.runner = worker.New(
+			audit.NewDBRunRecorder(pool).Record,
+			worker.PurgeExpiredShares{
+				Store:   pg,
+				Objects: s3Storage,
+				Auditor: audit.NewDBAuditor(pool),
+			},
+		)
+		log.Println("shares: database store enabled")
 	} else {
 		log.Println("shares: DATABASE_URL not set, share endpoints disabled")
 	}

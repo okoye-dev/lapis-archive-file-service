@@ -9,14 +9,13 @@ import (
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/config"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/handlers"
-	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
 
 type Deps struct {
 	Files    storage.Storage
-	Shares   shares.Store
+	Shares   handlers.ShareStore
 	Verifier *auth.Verifier
 	Config   *config.ServerConfig
 }

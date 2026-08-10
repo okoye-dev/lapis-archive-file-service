@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -14,15 +16,15 @@ type Auditor interface {
 	Record(ctx context.Context, action, subject string, detail any) error
 }
 
-type PostgresAuditor struct {
+type DBAuditor struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresAuditor(pool *pgxpool.Pool) *PostgresAuditor {
-	return &PostgresAuditor{pool: pool}
+func NewDBAuditor(pool *pgxpool.Pool) *DBAuditor {
+	return &DBAuditor{pool: pool}
 }
 
-func (a *PostgresAuditor) Record(ctx context.Context, action, subject string, detail any) error {
+func (a *DBAuditor) Record(ctx context.Context, action, subject string, detail any) error {
 	var raw []byte
 	if detail != nil {
 		b, err := json.Marshal(detail)
@@ -45,3 +47,33 @@ func (a *PostgresAuditor) Record(ctx context.Context, action, subject string, de
 type Nop struct{}
 
 func (Nop) Record(context.Context, string, string, any) error { return nil }
+
+// DBRunRecorder stores worker run history in job_runs. It satisfies
+// worker.Recorder (matched structurally, no import). Failures to record are
+// logged, never propagated — run history must not affect the job itself.
+type DBRunRecorder struct {
+	pool *pgxpool.Pool
+}
+
+func NewDBRunRecorder(pool *pgxpool.Pool) *DBRunRecorder {
+	return &DBRunRecorder{pool: pool}
+}
+
+func (r *DBRunRecorder) Record(ctx context.Context, job string, start, end time.Time, runErr error) {
+	status, errText := "ok", ""
+	if runErr != nil {
+		status, errText = "error", runErr.Error()
+	}
+
+	var errArg any
+	if errText != "" {
+		errArg = errText
+	}
+
+	_, err := r.pool.Exec(ctx,
+		`insert into job_runs (job, started_at, finished_at, status, error) values ($1,$2,$3,$4,$5)`,
+		job, start, end, status, errArg)
+	if err != nil {
+		log.Printf("job_runs: record %s: %v", job, err)
+	}
+}

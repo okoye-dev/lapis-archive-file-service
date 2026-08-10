@@ -25,6 +25,19 @@ type ObjectDeleter interface {
 	DeleteFile(ctx context.Context, key string) error
 }
 
+// PurgedShare is the snapshot written to the audit trail when a share is
+// removed, so "what existed and was deleted" is answerable after the row is
+// gone. Deliberately excludes the code hash/salt.
+type PurgedShare struct {
+	Slug       string    `json:"slug"`
+	StorageKey string    `json:"storage_key"`
+	FileName   string    `json:"file_name"`
+	FileSize   int64     `json:"file_size"`
+	OwnerEmail string    `json:"owner_email,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
 // PurgeExpiredShares removes shares past their expiry: it deletes the file
 // object, deletes the share row, and records each removal in the audit trail.
 type PurgeExpiredShares struct {
@@ -45,14 +58,14 @@ func (j PurgeExpiredShares) Run(ctx context.Context) error {
 	for _, s := range expired {
 		// Capture what existed before removing it, so the audit trail can
 		// answer "what was deleted" even though the row is gone.
-		record := map[string]any{
-			"slug":        s.Slug,
-			"storage_key": s.StorageKey,
-			"file_name":   s.FileName,
-			"file_size":   s.FileSize,
-			"owner_email": s.OwnerEmail,
-			"created_at":  s.CreatedAt,
-			"expires_at":  s.ExpiresAt,
+		record := PurgedShare{
+			Slug:       s.Slug,
+			StorageKey: s.StorageKey,
+			FileName:   s.FileName,
+			FileSize:   s.FileSize,
+			OwnerEmail: s.OwnerEmail,
+			CreatedAt:  s.CreatedAt,
+			ExpiresAt:  s.ExpiresAt,
 		}
 
 		if err := j.Objects.DeleteFile(ctx, s.StorageKey); err != nil {
