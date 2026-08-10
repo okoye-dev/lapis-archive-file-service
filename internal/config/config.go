@@ -8,9 +8,11 @@ import (
 )
 
 type Config struct {
-	Server  ServerConfig
-	Logging LoggingConfig
-	S3      S3Config
+	Server   ServerConfig
+	Logging  LoggingConfig
+	S3       S3Config
+	Database DatabaseConfig
+	Auth     AuthConfig
 }
 
 type ServerConfig struct {
@@ -39,6 +41,15 @@ type S3Config struct {
 	ForcePathStyle  bool
 }
 
+type DatabaseConfig struct {
+	URL string
+}
+
+type AuthConfig struct {
+	JWKSURL string
+	Issuer  string
+}
+
 func Load() *Config {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -63,6 +74,13 @@ func Load() *Config {
 			UseSSL:          getEnvBool("S3_USE_SSL", true),
 			BucketName:      getEnv("S3_BUCKET_NAME", "oss-archive"),
 			ForcePathStyle:  getEnvBool("S3_FORCE_PATH_STYLE", false),
+		},
+		Database: DatabaseConfig{
+			URL: getEnv("DATABASE_URL", ""),
+		},
+		Auth: AuthConfig{
+			JWKSURL: getEnv("AUTH_JWKS_URL", ""),
+			Issuer:  getEnv("AUTH_ISSUER", ""),
 		},
 	}
 

@@ -112,10 +112,32 @@ cmd/               entrypoint
 internal/
   config/          env-based configuration
   server/          HTTP server, routes, CORS, graceful shutdown
-  handlers/        request handlers (files, health)
+  handlers/        request handlers (files, health, shares)
+  shares/          share slug/code generation and verification
   storage/         S3-compatible storage client
+  models/          database row + auth identity types
   transport/rest/  shared response shapes
+db/
+  migrations/      database schema
 ```
+
+## Auth and history
+
+Anonymous quick-shares need no auth or database. Logged-in history adds two
+pieces, both vendor-neutral:
+
+- **Database**: any Postgres. Point `DATABASE_URL` at it and apply
+  `db/migrations/0001_init.sql`. The `shares` table stores `owner_id` (the
+  authenticated user's id) so history can be listed per owner.
+- **Auth**: an Email OTP provider that issues JWTs (Supabase today). The
+  backend verifies tokens against the issuer's JWKS endpoint
+  (`AUTH_JWKS_URL`) using its public key, so swapping providers is a config
+  change, not a code change. The frontend obtains the token with the
+  provider's SDK and the browser-safe publishable key.
+
+Ownership is enforced in the backend (queries filter by the verified
+`owner_id`), so the schema stays plain Postgres with no vendor-specific
+row-level security.
 
 ## Development
 
@@ -137,8 +159,8 @@ For Railway and friends: point it at the repo, set the `S3_*` variables, done.
 
 ## Roadmap
 
-- Gate `GET /files` and `DELETE /files/:id` behind an admin token (they are open today)
-- Client integration: presigned uploads + server-side shares end to end
+- Wire the `shares` table: JWT-verify middleware, write share rows, list history
+- Gate `GET /files` and `DELETE /files/:id` behind auth (they are open today)
 - Bucket lifecycle rules for physical deletion of expired files
 - Email delivery of access codes
 
