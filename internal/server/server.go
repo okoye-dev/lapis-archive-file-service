@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/config"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 )
 
@@ -19,6 +22,9 @@ type Server struct {
 	httpServer *http.Server
 	config     *config.Config
 	storage    storage.Storage
+	shareStore shares.Store
+	verifier   *auth.Verifier
+	pool       *pgxpool.Pool
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -27,10 +33,35 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("initializing storage: %w", err)
 	}
 
-	return &Server{
-		config:  cfg,
-		storage: s3Storage,
-	}, nil
+	srv := &Server{config: cfg, storage: s3Storage}
+
+	if cfg.Database.URL != "" {
+		pool, err := pgxpool.New(context.Background(), cfg.Database.URL)
+		if err != nil {
+			return nil, fmt.Errorf("connecting to database: %w", err)
+		}
+		if err := pool.Ping(context.Background()); err != nil {
+			return nil, fmt.Errorf("pinging database: %w", err)
+		}
+		srv.pool = pool
+		srv.shareStore = shares.NewPostgresStore(pool)
+		log.Println("shares: postgres store enabled")
+	} else {
+		log.Println("shares: DATABASE_URL not set, share endpoints disabled")
+	}
+
+	if cfg.Auth.JWKSURL != "" {
+		v, err := auth.NewVerifier(context.Background(), cfg.Auth.JWKSURL, cfg.Auth.Issuer)
+		if err != nil {
+			return nil, fmt.Errorf("initializing auth: %w", err)
+		}
+		srv.verifier = v
+		log.Println("auth: jwks verification enabled")
+	} else {
+		log.Println("auth: AUTH_JWKS_URL not set, authenticated endpoints disabled")
+	}
+
+	return srv, nil
 }
 
 func (s *Server) Start() error {
@@ -44,7 +75,12 @@ func (s *Server) Start() error {
 		return fmt.Errorf("setting trusted proxies: %w", err)
 	}
 
-	SetupRoutes(router, s.storage, &s.config.Server)
+	SetupRoutes(router, Deps{
+		Files:    s.storage,
+		Shares:   s.shareStore,
+		Verifier: s.verifier,
+		Config:   &s.config.Server,
+	})
 
 	s.httpServer = &http.Server{
 		Addr:         fmt.Sprintf(":%d", s.config.Server.Port),
@@ -79,6 +115,9 @@ func (s *Server) Start() error {
 
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutting down: %w", err)
+	}
+	if s.pool != nil {
+		s.pool.Close()
 	}
 
 	log.Println("server stopped")

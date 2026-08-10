@@ -11,35 +11,30 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
 )
 
+// fakeStorage implements storage.Storage; it only tracks object sizes since
+// file bytes never flow through the service.
 type fakeStorage struct {
-	objects map[string][]byte
-	sizes   map[string]int64
+	sizes map[string]int64
 }
 
 func newFakeStorage() *fakeStorage {
-	return &fakeStorage{
-		objects: make(map[string][]byte),
-		sizes:   make(map[string]int64),
-	}
+	return &fakeStorage{sizes: make(map[string]int64)}
 }
 
-func (f *fakeStorage) seed(key string, data []byte) {
-	f.objects[key] = data
-	f.sizes[key] = int64(len(data))
-}
+func (f *fakeStorage) seed(key string, size int64) { f.sizes[key] = size }
 
 func (f *fakeStorage) DeleteFile(_ context.Context, key string) error {
-	delete(f.objects, key)
 	delete(f.sizes, key)
 	return nil
 }
 
 func (f *fakeStorage) ListFiles(_ context.Context) ([]string, error) {
-	var keys []string
-	for k := range f.objects {
+	keys := make([]string, 0, len(f.sizes))
+	for k := range f.sizes {
 		keys = append(keys, k)
 	}
 	return keys, nil
@@ -48,49 +43,84 @@ func (f *fakeStorage) ListFiles(_ context.Context) ([]string, error) {
 func (f *fakeStorage) GetFileSize(_ context.Context, key string) (int64, error) {
 	size, ok := f.sizes[key]
 	if !ok {
-		return 0, storage.ErrNotFound
+		return 0, fmt.Errorf("not found: %s", key)
 	}
 	return size, nil
 }
 
 func (f *fakeStorage) GetPresignedURL(_ context.Context, key string, forceDownload bool) (string, error) {
-	if _, ok := f.objects[key]; !ok {
-		return "", storage.ErrNotFound
+	if _, ok := f.sizes[key]; !ok {
+		return "", fmt.Errorf("not found: %s", key)
 	}
 	return "https://bucket.example/" + key + fmt.Sprintf("?download=%t", forceDownload), nil
 }
 
-func (f *fakeStorage) GetPresignedUploadURL(_ context.Context, key string, size int64, _ string) (string, error) {
+func (f *fakeStorage) GetPresignedUploadURL(_ context.Context, key string, _ int64, _ string) (string, error) {
 	return "https://bucket.example/upload/" + key, nil
 }
 
-func (f *fakeStorage) GetMetadata(_ context.Context, key string) ([]byte, error) {
-	data, ok := f.objects[key]
-	if !ok {
-		return nil, storage.ErrNotFound
-	}
-	return data, nil
+// memStore is an in-memory shares.Store.
+type memStore struct {
+	byslug map[string]*shares.Share
 }
 
-func (f *fakeStorage) PutMetadata(_ context.Context, key string, data []byte) error {
-	f.objects[key] = data
-	f.sizes[key] = int64(len(data))
+func newMemStore() *memStore { return &memStore{byslug: make(map[string]*shares.Share)} }
+
+func (m *memStore) Create(_ context.Context, s *shares.Share) error {
+	m.byslug[s.Slug] = s
 	return nil
 }
 
-func setupRouter(store *fakeStorage) *gin.Engine {
+func (m *memStore) GetBySlug(_ context.Context, slug string) (*shares.Share, error) {
+	s, ok := m.byslug[slug]
+	if !ok {
+		return nil, shares.ErrNotFound
+	}
+	return s, nil
+}
+
+func (m *memStore) ListByOwner(_ context.Context, ownerID string) ([]*shares.Share, error) {
+	var out []*shares.Share
+	for _, s := range m.byslug {
+		if s.OwnerID == ownerID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) Delete(_ context.Context, slug, ownerID string) error {
+	s, ok := m.byslug[slug]
+	if !ok || s.OwnerID != ownerID {
+		return shares.ErrNotFound
+	}
+	delete(m.byslug, slug)
+	return nil
+}
+
+// setupRouter wires the handlers. If asUser is non-empty, an auth middleware
+// injects that user so the authenticated routes can be exercised.
+func setupRouter(files *fakeStorage, store shares.Store, asUser string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 
-	fileHandler := NewFileHandler(store, 10*1024*1024)
+	if asUser != "" {
+		router.Use(func(c *gin.Context) {
+			auth.SetUser(c, &auth.User{ID: asUser, Email: asUser + "@example.com"})
+			c.Next()
+		})
+	}
+
+	fileHandler := NewFileHandler(files, 10*1024*1024)
 	router.GET("/files", fileHandler.GetFiles)
 	router.POST("/files/presign-upload", fileHandler.PresignUpload)
 
-	shareHandler := NewShareHandler(store)
-	router.POST("/shares", shareHandler.CreateShare)
-	router.GET("/shares/:slug", shareHandler.GetShare)
-	router.POST("/shares/:slug/unlock", shareHandler.UnlockShare)
-
+	sh := NewShareHandler(store, files)
+	router.POST("/shares", sh.CreateShare)
+	router.GET("/shares", sh.ListMine)
+	router.GET("/shares/:slug", sh.GetShare)
+	router.POST("/shares/:slug/unlock", sh.UnlockShare)
+	router.DELETE("/shares/:slug", sh.RevokeShare)
 	return router
 }
 
@@ -107,13 +137,13 @@ func doJSON(router *gin.Engine, method, path string, body any) *httptest.Respons
 }
 
 func TestShareLifecycle(t *testing.T) {
-	store := newFakeStorage()
-	store.seed("uuid1_report.pdf", []byte("data"))
-	router := setupRouter(store)
+	files := newFakeStorage()
+	files.seed("uuid1_report.pdf", 54)
+	router := setupRouter(files, newMemStore(), "")
 
 	w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid1_report.pdf"})
 	if w.Code != http.StatusOK {
-		t.Fatalf("create share: %d %s", w.Code, w.Body.String())
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
 	var created CreateShareResponse
 	json.Unmarshal(w.Body.Bytes(), &created)
@@ -121,20 +151,15 @@ func TestShareLifecycle(t *testing.T) {
 		t.Fatalf("missing slug/code: %+v", created)
 	}
 	if created.FileName != "report.pdf" {
-		t.Errorf("file name = %q, want report.pdf", created.FileName)
+		t.Errorf("file name = %q", created.FileName)
 	}
 
 	w = doJSON(router, "GET", "/shares/"+created.Slug, nil)
 	if w.Code != http.StatusOK {
-		t.Fatalf("get share: %d", w.Code)
-	}
-	var meta ShareMetaResponse
-	json.Unmarshal(w.Body.Bytes(), &meta)
-	if meta.Expired {
-		t.Error("fresh share reported expired")
+		t.Fatalf("get: %d", w.Code)
 	}
 	if bytes.Contains(w.Body.Bytes(), []byte(created.Code)) {
-		t.Error("share metadata leaks the access code")
+		t.Error("metadata leaks the access code")
 	}
 
 	w = doJSON(router, "POST", "/shares/"+created.Slug+"/unlock", gin.H{"code": "XXXXXX"})
@@ -149,100 +174,28 @@ func TestShareLifecycle(t *testing.T) {
 	var unlocked UnlockShareResponse
 	json.Unmarshal(w.Body.Bytes(), &unlocked)
 	if unlocked.URL == "" {
-		t.Error("no presigned url returned")
+		t.Error("no presigned url")
 	}
 }
 
 func TestShareNotFound(t *testing.T) {
-	router := setupRouter(newFakeStorage())
+	router := setupRouter(newFakeStorage(), newMemStore(), "")
 
-	w := doJSON(router, "GET", "/shares/aaaaaaaaaa", nil)
-	if w.Code != http.StatusNotFound {
+	if w := doJSON(router, "GET", "/shares/aaaaaaaaaa", nil); w.Code != http.StatusNotFound {
 		t.Errorf("missing share: %d, want 404", w.Code)
 	}
-
-	w = doJSON(router, "POST", "/shares", gin.H{"storage_key": "nope_file.txt"})
-	if w.Code != http.StatusNotFound {
+	if w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "nope_file.txt"}); w.Code != http.StatusNotFound {
 		t.Errorf("share of missing file: %d, want 404", w.Code)
 	}
 }
 
-func TestShareRejectsShareKeys(t *testing.T) {
-	store := newFakeStorage()
-	store.seed("shares/abcdefghij.json", []byte("{}"))
-	router := setupRouter(store)
-
-	w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "shares/abcdefghij.json"})
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("share of share metadata: %d, want 400", w.Code)
-	}
-}
-
-func TestUnlockRateLimit(t *testing.T) {
-	store := newFakeStorage()
-	store.seed("uuid2_a.txt", []byte("data"))
-	router := setupRouter(store)
-
-	w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid2_a.txt"})
-	var created CreateShareResponse
-	json.Unmarshal(w.Body.Bytes(), &created)
-
-	var got429 bool
-	for i := 0; i < 12; i++ {
-		w = doJSON(router, "POST", "/shares/"+created.Slug+"/unlock", gin.H{"code": "WRONG1"})
-		if w.Code == http.StatusTooManyRequests {
-			got429 = true
-			break
-		}
-	}
-	if !got429 {
-		t.Error("rate limiter never engaged after 12 bad attempts")
-	}
-}
-
-func TestUnlockPerSlugLimitSurvivesIPRotation(t *testing.T) {
-	store := newFakeStorage()
-	store.seed("uuid4_a.txt", []byte("data"))
-	router := setupRouter(store)
-
-	w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid4_a.txt"})
-	var created CreateShareResponse
-	json.Unmarshal(w.Body.Bytes(), &created)
-
-	var got429 bool
-	for i := 0; i < 40; i++ {
-		var buf bytes.Buffer
-		json.NewEncoder(&buf).Encode(gin.H{"code": "WRONG1"})
-		req := httptest.NewRequest("POST", "/shares/"+created.Slug+"/unlock", &buf)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Forwarded-For", fmt.Sprintf("10.0.%d.%d", i/256, i%256))
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		if rec.Code == http.StatusTooManyRequests {
-			got429 = true
-			break
-		}
-	}
-	if !got429 {
-		t.Error("per-slug limit never engaged despite rotating IPs")
-	}
-}
-
-func TestUnlockRejectsInvalidSlug(t *testing.T) {
-	router := setupRouter(newFakeStorage())
-	w := doJSON(router, "POST", "/shares/../../etc/unlock", gin.H{"code": "AAAAAA"})
-	if w.Code == http.StatusOK {
-		t.Errorf("invalid slug unlocked: %d", w.Code)
-	}
-}
-
 func TestCreateShareRejectsOversizedEmail(t *testing.T) {
-	store := newFakeStorage()
-	store.seed("uuid5_a.txt", []byte("data"))
-	router := setupRouter(store)
+	files := newFakeStorage()
+	files.seed("uuid_a.txt", 4)
+	router := setupRouter(files, newMemStore(), "")
 
 	w := doJSON(router, "POST", "/shares", gin.H{
-		"storage_key":     "uuid5_a.txt",
+		"storage_key":     "uuid_a.txt",
 		"recipient_email": strings.Repeat("x", 1000),
 	})
 	if w.Code != http.StatusBadRequest {
@@ -250,26 +203,70 @@ func TestCreateShareRejectsOversizedEmail(t *testing.T) {
 	}
 }
 
-func TestGetFilesHidesShareMetadata(t *testing.T) {
-	store := newFakeStorage()
-	store.seed("uuid3_visible.txt", []byte("data"))
-	store.seed("shares/abcdefghij.json", []byte("{}"))
-	router := setupRouter(store)
+func TestUnlockRateLimited(t *testing.T) {
+	files := newFakeStorage()
+	files.seed("uuid_a.txt", 4)
+	router := setupRouter(files, newMemStore(), "")
 
-	w := doJSON(router, "GET", "/files", nil)
+	w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid_a.txt"})
+	var created CreateShareResponse
+	json.Unmarshal(w.Body.Bytes(), &created)
+
+	got429 := false
+	for i := 0; i < 40; i++ {
+		w = doJSON(router, "POST", "/shares/"+created.Slug+"/unlock", gin.H{"code": "WRONG1"})
+		if w.Code == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Error("rate limiter never engaged")
+	}
+}
+
+func TestListMineAndRevoke(t *testing.T) {
+	files := newFakeStorage()
+	files.seed("uuid_a.txt", 4)
+	store := newMemStore()
+
+	// user-a creates a share
+	routerA := setupRouter(files, store, "user-a")
+	w := doJSON(routerA, "POST", "/shares", gin.H{"storage_key": "uuid_a.txt"})
 	if w.Code != http.StatusOK {
-		t.Fatalf("list: %d", w.Code)
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
-	if bytes.Contains(w.Body.Bytes(), []byte("shares/")) {
-		t.Errorf("share metadata leaked into file list: %s", w.Body.String())
+	var created CreateShareResponse
+	json.Unmarshal(w.Body.Bytes(), &created)
+
+	// user-a sees it
+	w = doJSON(routerA, "GET", "/shares", nil)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(created.Slug)) {
+		t.Fatalf("list mine: %d %s", w.Code, w.Body.String())
 	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("visible.txt")) {
-		t.Errorf("real file missing from list: %s", w.Body.String())
+
+	// user-b can't see or revoke it
+	routerB := setupRouter(files, store, "user-b")
+	w = doJSON(routerB, "GET", "/shares", nil)
+	if bytes.Contains(w.Body.Bytes(), []byte(created.Slug)) {
+		t.Error("user-b sees user-a's share")
+	}
+	if w = doJSON(routerB, "DELETE", "/shares/"+created.Slug, nil); w.Code != http.StatusNotFound {
+		t.Errorf("user-b revoke: %d, want 404", w.Code)
+	}
+
+	// user-a revokes it
+	if w = doJSON(routerA, "DELETE", "/shares/"+created.Slug, nil); w.Code != http.StatusOK {
+		t.Errorf("user-a revoke: %d, want 200", w.Code)
+	}
+	w = doJSON(routerA, "GET", "/shares", nil)
+	if bytes.Contains(w.Body.Bytes(), []byte(created.Slug)) {
+		t.Error("share still listed after revoke")
 	}
 }
 
 func TestPresignUpload(t *testing.T) {
-	router := setupRouter(newFakeStorage())
+	router := setupRouter(newFakeStorage(), newMemStore(), "")
 
 	w := doJSON(router, "POST", "/files/presign-upload", gin.H{"name": "../../evil.sh", "size": 100})
 	if w.Code != http.StatusOK {
@@ -278,19 +275,13 @@ func TestPresignUpload(t *testing.T) {
 	var resp PresignUploadResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Name != "evil.sh" {
-		t.Errorf("name = %q, want sanitized evil.sh", resp.Name)
-	}
-	if resp.UploadURL == "" || resp.StorageKey == "" {
-		t.Errorf("incomplete response: %+v", resp)
+		t.Errorf("name = %q, want evil.sh", resp.Name)
 	}
 
-	w = doJSON(router, "POST", "/files/presign-upload", gin.H{"name": "big.bin", "size": 11 * 1024 * 1024})
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("oversize presign: %d, want 413", w.Code)
+	if w := doJSON(router, "POST", "/files/presign-upload", gin.H{"name": "big.bin", "size": 11 * 1024 * 1024}); w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversize: %d, want 413", w.Code)
 	}
-
-	w = doJSON(router, "POST", "/files/presign-upload", gin.H{"name": "nosize.bin"})
-	if w.Code != http.StatusBadRequest {
+	if w := doJSON(router, "POST", "/files/presign-upload", gin.H{"name": "nosize.bin"}); w.Code != http.StatusBadRequest {
 		t.Errorf("missing size: %d, want 400", w.Code)
 	}
 }

@@ -1,11 +1,8 @@
 package storage
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -14,39 +11,21 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	appconfig "github.com/okoye-dev/lapis-archive-file-service/internal/config"
 )
 
 const PresignTTL = time.Hour
 
-// maxObjectReadBytes caps GetObject, which is only used for small share
-// metadata JSON. It is far above any legitimate share (a few hundred bytes)
-// but bounds memory and makes an over-limit object a hard error rather than
-// a silent truncation.
-const maxObjectReadBytes = 256 * 1024
-
-var ErrNotFound = errors.New("object not found")
-
-func notFound(err error) bool {
-	var nsk *types.NoSuchKey
-	var nf *types.NotFound
-	return errors.As(err, &nsk) || errors.As(err, &nf)
-}
-
 // Storage is the object store. File BYTES never pass through this service:
 // clients upload and download directly via presigned URLs. The methods here
 // are the control plane only — presign issuance, a HEAD to confirm a file
-// exists, listing/deletion, and reading/writing small share-metadata JSON
-// (there is no database, so share records live in the bucket).
+// exists, and listing/deletion.
 type Storage interface {
 	GetPresignedUploadURL(ctx context.Context, key string, size int64, contentType string) (string, error)
 	GetPresignedURL(ctx context.Context, key string, forceDownload bool) (string, error)
 	DeleteFile(ctx context.Context, key string) error
 	ListFiles(ctx context.Context) ([]string, error)
 	GetFileSize(ctx context.Context, key string) (int64, error)
-	GetMetadata(ctx context.Context, key string) ([]byte, error)
-	PutMetadata(ctx context.Context, key string, data []byte) error
 }
 
 type S3Storage struct {
@@ -153,46 +132,6 @@ func (s *S3Storage) GetPresignedUploadURL(ctx context.Context, key string, size 
 	}
 
 	return request.URL, nil
-}
-
-func (s *S3Storage) GetMetadata(ctx context.Context, key string) ([]byte, error) {
-	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		if notFound(err) {
-			return nil, ErrNotFound
-		}
-		return nil, fmt.Errorf("getting %q: %w", key, err)
-	}
-	defer result.Body.Close()
-
-	// Read one byte past the cap so a genuinely oversized object errors
-	// instead of coming back silently truncated.
-	data, err := io.ReadAll(io.LimitReader(result.Body, maxObjectReadBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("reading %q: %w", key, err)
-	}
-	if len(data) > maxObjectReadBytes {
-		return nil, fmt.Errorf("object %q exceeds %d bytes", key, maxObjectReadBytes)
-	}
-
-	return data, nil
-}
-
-func (s *S3Storage) PutMetadata(ctx context.Context, key string, data []byte) error {
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.bucketName),
-		Key:         aws.String(key),
-		Body:        bytes.NewReader(data),
-		ContentType: aws.String("application/json"),
-	})
-	if err != nil {
-		return fmt.Errorf("putting %q: %w", key, err)
-	}
-
-	return nil
 }
 
 func (s *S3Storage) GetPresignedURL(ctx context.Context, key string, forceDownload bool) (string, error) {
