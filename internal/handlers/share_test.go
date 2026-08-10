@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
-	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 )
 
 // fakeStorage implements storage.Storage; it only tracks object sizes since
@@ -31,14 +30,6 @@ func (f *fakeStorage) seed(key string, size int64) { f.sizes[key] = size }
 func (f *fakeStorage) DeleteFile(_ context.Context, key string) error {
 	delete(f.sizes, key)
 	return nil
-}
-
-func (f *fakeStorage) ListFiles(_ context.Context) ([]storage.FileInfo, error) {
-	out := make([]storage.FileInfo, 0, len(f.sizes))
-	for k, size := range f.sizes {
-		out = append(out, storage.FileInfo{Key: k, Size: size})
-	}
-	return out, nil
 }
 
 func (f *fakeStorage) GetFileSize(_ context.Context, key string) (int64, error) {
@@ -113,7 +104,6 @@ func setupRouter(files *fakeStorage, store ShareStore, asUser string) *gin.Engin
 	}
 
 	fileHandler := NewFileHandler(files, 10*1024*1024)
-	router.GET("/files", fileHandler.GetFiles)
 	router.POST("/files/presign-upload", fileHandler.PresignUpload)
 
 	sh := NewShareHandler(store, files)

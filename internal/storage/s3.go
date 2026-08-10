@@ -20,18 +20,10 @@ const PresignTTL = time.Hour
 // clients upload and download directly via presigned URLs. The methods here
 // are the control plane only — presign issuance, a HEAD to confirm a file
 // exists, and listing/deletion.
-// FileInfo is a listed object: its key and size, both already returned by a
-// single list call so callers never need a per-object HEAD.
-type FileInfo struct {
-	Key  string
-	Size int64
-}
-
 type Storage interface {
 	GetPresignedUploadURL(ctx context.Context, key string, size int64, contentType string) (string, error)
 	GetPresignedURL(ctx context.Context, key string, forceDownload bool) (string, error)
 	DeleteFile(ctx context.Context, key string) error
-	ListFiles(ctx context.Context) ([]FileInfo, error)
 	GetFileSize(ctx context.Context, key string) (int64, error)
 }
 
@@ -88,25 +80,6 @@ func (s *S3Storage) DeleteFile(ctx context.Context, key string) error {
 	}
 
 	return nil
-}
-
-func (s *S3Storage) ListFiles(ctx context.Context) ([]FileInfo, error) {
-	var files []FileInfo
-
-	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucketName),
-	})
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("listing files: %w", err)
-		}
-		for _, obj := range page.Contents {
-			files = append(files, FileInfo{Key: aws.ToString(obj.Key), Size: aws.ToInt64(obj.Size)})
-		}
-	}
-
-	return files, nil
 }
 
 func (s *S3Storage) GetFileSize(ctx context.Context, key string) (int64, error) {

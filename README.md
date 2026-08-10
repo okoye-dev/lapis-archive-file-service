@@ -18,11 +18,11 @@ Next.js client  ──►  file service  ──►  S3-compatible bucket
 | --- | --- |
 | Presigned upload + download | ✅ working |
 | Anonymous shares (link + one-time code, 72h expiry) | ✅ working |
-| Share metadata store | ✅ in the bucket as JSON (`shares/<slug>.json`) |
+| Share store | ✅ Postgres (bucket holds file bytes only) |
 | Rate-limited, code-gated unlock | ✅ working |
-| Auth + logged-in history | 🟡 schema and config scaffolded, **not wired** |
-| Physical deletion of expired files | 🟡 planned (bucket lifecycle rule) |
-| `GET /files` / `DELETE /files/:id` auth | ⚠️ **currently unauthenticated** — see [Security](#security) |
+| JWKS auth + history + revoke | ✅ working (needs an OTP provider + `DATABASE_URL`) |
+| Expiry purge worker + audit trail | ✅ working |
+| Schema migrations | ✅ embedded runner, auto-applies on boot |
 
 ## Features
 
@@ -59,10 +59,10 @@ All routes are under `/api/v1`.
 | `POST` | `/shares` | Create a share for a file; returns a slug and a one-time access code |
 | `GET` | `/shares/:slug` | Public share metadata (name, size, expiry) — no code required |
 | `POST` | `/shares/:slug/unlock` | Exchange the access code for a presigned download URL |
-| `GET` | `/files` | List bucket objects — **internal/unauthenticated, not a product feature** |
-| `DELETE` | `/files/:id` | Delete an object — **internal/unauthenticated** |
+| `GET` | `/shares` | List the authenticated caller's shares (requires a bearer token) |
+| `DELETE` | `/shares/:slug` | Revoke one of the caller's shares (requires a bearer token) |
 
-`:id` is the storage key, shaped `<uuid>_<original-filename>`. Errors return `{"error": "...", "code": <status>}`.
+`:id` is the storage key, shaped `<uuid>_<original-filename>`. Errors return `{"error": "...", "code": <status>}`. Share endpoints return `503` when `DATABASE_URL` is unset.
 
 <details>
 <summary>Example: upload and share</summary>
@@ -113,35 +113,50 @@ The service never creates buckets — create yours first (the dev compose does t
 
 Because uploads PUT directly to the bucket, the bucket must allow it. MinIO is permissive by default. For R2/S3, add a CORS rule allowing `PUT`/`GET` from your frontend origin and exposing `ETag`.
 
-## Auth and history (planned)
+## Auth and history
 
-Not built yet; the schema and config exist so it can be wired without a migration later. The intended design, kept vendor-neutral:
+Anonymous quick-shares need no auth. History and revoke require a signed-in
+user, kept vendor-neutral:
 
-- **Database**: any Postgres (`DATABASE_URL`); apply `db/migrations/0001_init.sql`. The `shares` table carries `owner_id` so history can be listed per user.
-- **Auth**: an Email-OTP provider that issues JWTs (Supabase is the first target). The backend will verify tokens against the issuer's JWKS endpoint (`AUTH_JWKS_URL`), so swapping providers is a config change. Ownership is enforced in the backend, so the schema stays plain Postgres with no vendor-specific row-level security.
+- **Database**: any Postgres via `DATABASE_URL`. Migrations run automatically
+  on boot (or `make migrate`), tracked in `schema_migrations`. The `shares`
+  table carries `owner_id` so history is listed per user.
+- **Auth**: an Email-OTP provider that issues JWTs (Supabase is the first
+  target). The backend verifies bearer tokens against the issuer's JWKS
+  endpoint (`AUTH_JWKS_URL`), so swapping providers is a config change.
+  Ownership is enforced in the backend, so the schema stays plain Postgres
+  with no vendor-specific row-level security.
 
 ## Security
 
-This is an MVP. Two things to know before hosting real data:
-
-- **`GET /files`, `DELETE /files/:id`, and `POST /files/presign-upload` are unauthenticated.** Anyone can list, download, delete, or upload to the bucket. Gating these behind auth is the top roadmap item; until then, treat any deployment as fully public.
-- **The access code is enforced only on `/shares/:slug/unlock`.** Because `/files/:id` is open, the underlying object is reachable without a code today. The code becomes a real boundary once `/files` is gated.
-
-Unlock attempts are rate-limited per slug and per IP, and access codes are stored only as salted hashes.
+- **Bytes never transit the service** — uploads/downloads are presigned,
+  direct browser↔bucket.
+- **No bucket-listing endpoint.** `GET /files/:id` is a capability URL: it
+  presigns a download only for a caller who already holds the unguessable
+  `<uuid>_<name>` key. There is no way to enumerate the bucket.
+- **Access codes** are stored only as salted hashes; unlock attempts are rate
+  limited per slug and per IP.
+- **Expired shares** are deleted by the purge worker (object + row), each
+  removal recorded in `audit_log`.
 
 ## Project layout
 
 ```
-cmd/               entrypoint
+cmd/
+  main.go          service entrypoint
+  migrate/         migration CLI
 internal/
   config/          env-based configuration
   server/          HTTP server, routes, CORS, graceful shutdown
   handlers/        request handlers (files, shares, health)
-  shares/          slug/code generation and verification
+  shares/          share type + Postgres store
+  auth/            JWKS bearer-token verification
   storage/         S3-compatible storage client
-  models/          database row + auth identity types (for the planned DB)
+  worker/          periodic job runner + expiry purge
+  audit/           audit log + job-run history
+  migrate/         embedded migration runner
   transport/rest/  shared response shapes
-db/migrations/     database schema
+db/migrations/     SQL migrations (embedded)
 ```
 
 ## Development
@@ -162,10 +177,8 @@ docker compose up --build -d   # reads credentials from .env
 
 ## Roadmap
 
-- Gate `GET /files` / `DELETE /files/:id` / presign-upload behind auth
-- Wire the `shares` table: JWKS-verify middleware, write share rows, list history
-- Bucket lifecycle rules to physically delete expired files
 - Email delivery of access codes
+- Per-share attempt ceiling / lockout that survives restarts (shared store)
 
 ## License
 

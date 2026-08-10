@@ -42,12 +42,14 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 	api := router.Group("/api/v1")
 	api.GET("/health", handlers.HealthHandler)
 
+	// No bucket-listing or delete endpoint: listing the whole bucket leaked
+	// every uploader's files, and deletion is destructive. Uploads return
+	// their own key (the client tracks them), downloads use the capability
+	// URL below, and cleanup happens via share revoke + the purge worker.
 	fileHandler := handlers.NewFileHandler(deps.Files, maxUploadBytes)
 	files := api.Group("/files")
-	files.GET("", fileHandler.GetFiles)
 	files.POST("/presign-upload", limitBody(maxJSONBytes), fileHandler.PresignUpload)
 	files.GET("/:id", fileHandler.GetFile)
-	files.DELETE("/:id", fileHandler.DeleteFile)
 
 	shareRoutes := api.Group("/shares")
 

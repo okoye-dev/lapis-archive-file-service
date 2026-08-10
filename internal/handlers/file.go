@@ -5,12 +5,10 @@ import (
 	"log"
 	"net/http"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
@@ -42,21 +40,6 @@ func sanitizeFilename(name string) string {
 		return "file"
 	}
 	return cleaned
-}
-
-type FilesResponse struct {
-	Files []FileResponse `json:"files"`
-}
-
-type FileResponse struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	StorageKey string `json:"storage_key"`
-	Size       int64  `json:"size"`
-}
-
-type DeleteFileResponse struct {
-	Deleted string `json:"deleted"`
 }
 
 type FileDownloadResponse struct {
@@ -125,38 +108,6 @@ func (h *FileHandler) PresignUpload(c *gin.Context) {
 	})
 }
 
-func (h *FileHandler) GetFiles(c *gin.Context) {
-	ctx := c.Request.Context()
-
-	objects, err := h.storage.ListFiles(ctx)
-	if err != nil {
-		log.Printf("list files: %v", err)
-		rest.InternalError(c, "Could not list files")
-		return
-	}
-
-	fileList := make([]FileResponse, 0, len(objects))
-	for _, obj := range objects {
-		if strings.HasPrefix(obj.Key, shares.KeyPrefix) {
-			continue
-		}
-		fileID, fileName, found := strings.Cut(obj.Key, "_")
-		if !found {
-			fileID = obj.Key
-			fileName = filepath.Base(obj.Key)
-		}
-
-		fileList = append(fileList, FileResponse{
-			ID:         fileID,
-			Name:       fileName,
-			StorageKey: obj.Key,
-			Size:       obj.Size,
-		})
-	}
-
-	rest.Success(c, FilesResponse{Files: fileList})
-}
-
 func (h *FileHandler) GetFile(c *gin.Context) {
 	storageKey := c.Param("id")
 	if storageKey == "" || strings.Contains(storageKey, "/") {
@@ -178,20 +129,4 @@ func (h *FileHandler) GetFile(c *gin.Context) {
 		Download:  forceDownload,
 		ExpiresIn: int(storage.PresignTTL.Seconds()),
 	})
-}
-
-func (h *FileHandler) DeleteFile(c *gin.Context) {
-	storageKey := c.Param("id")
-	if storageKey == "" || strings.Contains(storageKey, "/") {
-		rest.BadRequest(c, "File ID required")
-		return
-	}
-
-	if err := h.storage.DeleteFile(c.Request.Context(), storageKey); err != nil {
-		log.Printf("delete %s: %v", storageKey, err)
-		rest.InternalError(c, "Delete failed, try again")
-		return
-	}
-
-	rest.Success(c, DeleteFileResponse{Deleted: storageKey})
 }
