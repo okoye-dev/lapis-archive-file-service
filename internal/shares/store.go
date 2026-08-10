@@ -101,6 +101,32 @@ func (p *PostgresStore) ListByOwner(ctx context.Context, ownerID string) ([]*Sha
 	return out, rows.Err()
 }
 
+func (p *PostgresStore) ListExpired(ctx context.Context, limit int) ([]*Share, error) {
+	rows, err := p.pool.Query(ctx, `select `+selectColumns+`
+		from shares where expires_at < now() order by expires_at asc limit $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list expired: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*Share
+	for rows.Next() {
+		s, err := scanShare(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan share: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresStore) DeleteBySlug(ctx context.Context, slug string) error {
+	if _, err := p.pool.Exec(ctx, `delete from shares where slug = $1`, slug); err != nil {
+		return fmt.Errorf("delete share: %w", err)
+	}
+	return nil
+}
+
 func (p *PostgresStore) Delete(ctx context.Context, slug, ownerID string) error {
 	tag, err := p.pool.Exec(ctx, `delete from shares where slug = $1 and owner_id = $2`, slug, ownerID)
 	if err != nil {

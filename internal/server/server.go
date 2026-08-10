@@ -12,10 +12,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/audit"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/config"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/worker"
 )
 
 type Server struct {
@@ -25,6 +27,7 @@ type Server struct {
 	shareStore shares.Store
 	verifier   *auth.Verifier
 	pool       *pgxpool.Pool
+	runner     *worker.Runner
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -43,8 +46,14 @@ func New(cfg *config.Config) (*Server, error) {
 		if err := pool.Ping(context.Background()); err != nil {
 			return nil, fmt.Errorf("pinging database: %w", err)
 		}
+		pg := shares.NewPostgresStore(pool)
 		srv.pool = pool
-		srv.shareStore = shares.NewPostgresStore(pool)
+		srv.shareStore = pg
+		srv.runner = worker.New(worker.PurgeExpiredShares{
+			Store:   pg,
+			Objects: s3Storage,
+			Auditor: audit.NewPostgresAuditor(pool),
+		})
 		log.Println("shares: postgres store enabled")
 	} else {
 		log.Println("shares: DATABASE_URL not set, share endpoints disabled")
@@ -90,6 +99,13 @@ func (s *Server) Start() error {
 		IdleTimeout:  time.Duration(s.config.Server.IdleTimeout) * time.Second,
 	}
 
+	// Background jobs run until shutdown cancels this context.
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	if s.runner != nil {
+		s.runner.Start(workerCtx)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("server listening on port %d", s.config.Server.Port)
@@ -115,6 +131,11 @@ func (s *Server) Start() error {
 
 	if err := s.httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutting down: %w", err)
+	}
+
+	stopWorkers()
+	if s.runner != nil {
+		s.runner.Wait()
 	}
 	if s.pool != nil {
 		s.pool.Close()

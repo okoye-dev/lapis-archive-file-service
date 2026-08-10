@@ -1,0 +1,75 @@
+package worker
+
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/okoye-dev/lapis-archive-file-service/internal/audit"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/shares"
+)
+
+const (
+	purgeInterval  = time.Hour
+	purgeBatchSize = 200
+)
+
+// ExpiredShareStore is the slice of the share store the purge job needs.
+type ExpiredShareStore interface {
+	ListExpired(ctx context.Context, limit int) ([]*shares.Share, error)
+	DeleteBySlug(ctx context.Context, slug string) error
+}
+
+// ObjectDeleter deletes a file object from storage.
+type ObjectDeleter interface {
+	DeleteFile(ctx context.Context, key string) error
+}
+
+// PurgeExpiredShares removes shares past their expiry: it deletes the file
+// object, deletes the share row, and records each removal in the audit trail.
+type PurgeExpiredShares struct {
+	Store   ExpiredShareStore
+	Objects ObjectDeleter
+	Auditor audit.Auditor
+}
+
+func (PurgeExpiredShares) Name() string            { return "purge-expired-shares" }
+func (PurgeExpiredShares) Interval() time.Duration { return purgeInterval }
+
+func (j PurgeExpiredShares) Run(ctx context.Context) error {
+	expired, err := j.Store.ListExpired(ctx, purgeBatchSize)
+	if err != nil {
+		return err
+	}
+
+	for _, s := range expired {
+		// Capture what existed before removing it, so the audit trail can
+		// answer "what was deleted" even though the row is gone.
+		record := map[string]any{
+			"slug":        s.Slug,
+			"storage_key": s.StorageKey,
+			"file_name":   s.FileName,
+			"file_size":   s.FileSize,
+			"owner_email": s.OwnerEmail,
+			"created_at":  s.CreatedAt,
+			"expires_at":  s.ExpiresAt,
+		}
+
+		if err := j.Objects.DeleteFile(ctx, s.StorageKey); err != nil {
+			log.Printf("purge: delete object %s: %v", s.StorageKey, err)
+			continue
+		}
+		if err := j.Store.DeleteBySlug(ctx, s.Slug); err != nil {
+			log.Printf("purge: delete row %s: %v", s.Slug, err)
+			continue
+		}
+		if err := j.Auditor.Record(ctx, "purge_share", s.Slug, record); err != nil {
+			log.Printf("purge: audit %s: %v", s.Slug, err)
+		}
+	}
+
+	if len(expired) > 0 {
+		log.Printf("purge: removed %d expired share(s)", len(expired))
+	}
+	return nil
+}
