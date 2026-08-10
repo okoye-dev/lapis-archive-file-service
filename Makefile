@@ -25,8 +25,9 @@ help:
 
 dev:
 	docker compose -f docker-compose.dev.yml up -d
-	@echo "MinIO S3 API:  http://localhost:9000"
-	@echo "MinIO console: http://localhost:9001 (minioadmin/minioadmin)"
+	@echo "MinIO S3 API:  http://localhost:47470"
+	@echo "MinIO console: http://localhost:47471 (minioadmin/minioadmin)"
+	@echo "Postgres:      postgres://postgres:postgres@localhost:47432/lapis"
 	@echo "Next: make run"
 
 run:
@@ -65,7 +66,7 @@ prod-stop:
 	docker compose down
 
 minio:
-	@open http://localhost:9001 2>/dev/null || echo "Open http://localhost:9001 in your browser"
+	@open http://localhost:47471 2>/dev/null || echo "Open http://localhost:47471 in your browser"
 
 clean:
 	docker compose -f docker-compose.dev.yml down -v

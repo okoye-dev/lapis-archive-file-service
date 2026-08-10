@@ -1,9 +1,11 @@
+name: lapis-archive
+
 services:
   minio:
     image: minio/minio
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "47470:9000"
+      - "47471:9001"
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
@@ -31,5 +33,23 @@ services:
       exit 0;
       "
 
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "47432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=lapis
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d lapis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   minio_data:
+  postgres_data:

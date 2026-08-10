@@ -1,109 +1,133 @@
 # Lapis Archive — File Service
 
-The Go backend for [Lapis Archive](https://github.com/okoye-dev), a small open source tool for getting a file from one device to another. Upload a file, hand someone a link and a code, done.
+The backend for [Lapis Archive](https://github.com/okoye-dev), a small open-source tool for getting a file from one device to another: upload a file, hand someone a link and a code, done.
 
-This service does one job: it accepts file uploads and hands out time-limited download links. Files live in any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO). There is no database, no accounts, and no state in the service itself, which keeps it easy to run, easy to read, and easy to throw away and redeploy.
-
-## How it fits together
+It does one job well. It issues presigned URLs so files move **directly between the browser and an S3-compatible bucket** — the service never touches file bytes — and it manages the share links and access codes that gate a download.
 
 ```
-Next.js client  ──►  this service  ──►  S3-compatible bucket
-(lapis-archive-client)   Gin, :6060        (R2 / S3 / MinIO)
+Next.js client  ──►  file service  ──►  S3-compatible bucket
+                     (Go, Gin, :6060)     (R2 / S3 / MinIO)
+        │                                        ▲
+        └──────────── presigned PUT/GET ─────────┘
+                  (file bytes go direct)
 ```
 
-- File bytes never pass through this service. Uploads use a presigned PUT URL and downloads a presigned GET URL, so bytes flow directly between the client and the bucket.
-- The service only handles the control plane: issuing presigned URLs, listing/deleting, and storing small share records.
-- There is no database. Share records are small JSON objects kept in the bucket under `shares/<slug>.json`, with the access code stored only as a salted hash.
+## Status
 
-## API
+| Area | State |
+| --- | --- |
+| Presigned upload + download | ✅ working |
+| Anonymous shares (link + one-time code, 72h expiry) | ✅ working |
+| Share metadata store | ✅ in the bucket as JSON (`shares/<slug>.json`) |
+| Rate-limited, code-gated unlock | ✅ working |
+| Auth + logged-in history | 🟡 schema and config scaffolded, **not wired** |
+| Physical deletion of expired files | 🟡 planned (bucket lifecycle rule) |
+| `GET /files` / `DELETE /files/:id` auth | ⚠️ **currently unauthenticated** — see [Security](#security) |
 
-All routes live under `/api/v1`.
+## Features
 
-| Method | Path | What it does |
-| --- | --- | --- |
-| GET | `/health` | Liveness check |
-| GET | `/files` | List files in the bucket |
-| POST | `/files/presign-upload` | Get a presigned PUT URL, then upload straight to the bucket |
-| GET | `/files/:id` | Get a presigned download URL (add `?download=true` to force save-as) |
-| DELETE | `/files/:id` | Delete a file |
-| POST | `/shares` | Create a share for a file: returns a slug and a one-time-shown access code |
-| GET | `/shares/:slug` | Public share metadata (file name, size, expiry) — no code needed |
-| POST | `/shares/:slug/unlock` | Exchange the access code for a presigned download URL |
+- **Zero-copy transfers** — file bytes never pass through the service; only presigned URLs do.
+- **No database required** for the core flow — share records live in the bucket.
+- **Works with any S3-compatible store** — AWS S3, Cloudflare R2, or MinIO for local dev.
+- **Stateless** — easy to run, scale horizontally, and redeploy.
 
-`:id` is the file's storage key, which has the shape `<uuid>_<original-filename>`.
+## Quickstart (local)
 
-Uploading (bytes go straight to the bucket, never through this service):
+Requires Go 1.24+ and Docker.
 
 ```bash
-curl -s -X POST http://localhost:6060/api/v1/files/presign-upload \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"photo.jpg","size":123456,"content_type":"image/jpeg"}'
-# → {"upload_url":"...","storage_key":"<uuid>_photo.jpg",...}
-curl -X PUT --upload-file photo.jpg "<upload_url>" -H 'Content-Type: image/jpeg'
-```
-
-Sharing:
-
-```bash
-curl -s -X POST http://localhost:6060/api/v1/shares \
-  -d '{"storage_key":"<uuid>_photo.jpg"}'
-# → {"slug":"aB3xY9kQ2m","code":"7K2P9Q",...}  code is only shown once
-curl -s -X POST http://localhost:6060/api/v1/shares/aB3xY9kQ2m/unlock \
-  -d '{"code":"7K2P9Q","download":true}'
-# → {"url":"<presigned download url>",...}
-```
-
-Share metadata lives in the bucket under `shares/<slug>.json` with the access code stored as a salted hash — there is no database. Unlock attempts are rate limited per slug and IP.
-
-Errors come back as `{"error": "message", "code": 500}` with a matching HTTP status.
-
-## Running it locally
-
-You need Go 1.24+ and Docker (for MinIO, the local stand-in for S3).
-
-```bash
-cp .env.local.example .env.local   # works as-is, no editing needed
-make dev                           # starts MinIO + creates the bucket
+cp .env.local.example .env.local   # works as-is against local MinIO
+make dev                           # starts MinIO + Postgres in Docker
 make run                           # runs the service on :6060
 ```
-
-Check it's alive:
 
 ```bash
 curl http://localhost:6060/api/v1/health
 ```
 
-To run against a real bucket instead of MinIO:
+`make dev` prints the local service URLs (MinIO console, Postgres). To run against a real bucket instead of MinIO, `cp .env.example .env`, fill in credentials, and `make run-remote`.
+
+## API
+
+All routes are under `/api/v1`.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness check |
+| `POST` | `/files/presign-upload` | Get a presigned PUT URL; the client uploads directly to the bucket |
+| `GET` | `/files/:id` | Get a presigned download URL (`?download=true` forces save-as) |
+| `POST` | `/shares` | Create a share for a file; returns a slug and a one-time access code |
+| `GET` | `/shares/:slug` | Public share metadata (name, size, expiry) — no code required |
+| `POST` | `/shares/:slug/unlock` | Exchange the access code for a presigned download URL |
+| `GET` | `/files` | List bucket objects — **internal/unauthenticated, not a product feature** |
+| `DELETE` | `/files/:id` | Delete an object — **internal/unauthenticated** |
+
+`:id` is the storage key, shaped `<uuid>_<original-filename>`. Errors return `{"error": "...", "code": <status>}`.
+
+<details>
+<summary>Example: upload and share</summary>
 
 ```bash
-cp .env.example .env               # fill in your credentials
-make run-remote
+# 1. presign, then PUT the bytes straight to the bucket
+curl -s -X POST http://localhost:6060/api/v1/files/presign-upload \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"photo.jpg","size":123456,"content_type":"image/jpeg"}'
+# → {"upload_url":"...","storage_key":"<uuid>_photo.jpg", ...}
+curl -X PUT --upload-file photo.jpg "<upload_url>" -H 'Content-Type: image/jpeg'
+
+# 2. create a share, then unlock it with the code
+curl -s -X POST http://localhost:6060/api/v1/shares \
+  -d '{"storage_key":"<uuid>_photo.jpg"}'
+# → {"slug":"aB3xY9kQ2m","code":"7K2P9Q", ...}  (code shown once)
+curl -s -X POST http://localhost:6060/api/v1/shares/aB3xY9kQ2m/unlock \
+  -d '{"code":"7K2P9Q","download":true}'
+# → {"url":"<presigned download url>", ...}
 ```
+</details>
 
 ## Configuration
 
-Everything is configured through environment variables. Every value has a default, so only the storage credentials are truly required.
+Env-only (12-factor). Every value has a default; only storage credentials are required for real use.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `PORT` | `6060` | HTTP port |
 | `READ_TIMEOUT` / `WRITE_TIMEOUT` / `IDLE_TIMEOUT` | `30` / `30` / `120` | Seconds |
-| `SHUTDOWN_TIMEOUT` | `5` | Graceful shutdown window, seconds |
-| `GIN_MODE` | `release` | `debug` for verbose request logs |
-| `LOG_LEVEL` | `info` | |
-| `S3_ENDPOINT` | *(empty)* | Empty means AWS S3. For R2/MinIO set the host, no scheme |
+| `SHUTDOWN_TIMEOUT` | `5` | Graceful shutdown window (seconds) |
+| `GIN_MODE` | `release` | `debug` for verbose logs |
+| `MAX_UPLOAD_MB` | `512` | Upload cap (signed into the presigned URL) |
+| `ALLOWED_ORIGINS` | `*` | Comma-separated CORS allowlist |
+| `TRUSTED_PROXIES` | *(none)* | CIDRs to trust for client IP; unset = trust none |
+| `S3_ENDPOINT` | *(empty)* | Empty = AWS S3; host without scheme for R2/MinIO |
 | `S3_REGION` | `us-east-1` | R2 uses `auto` |
-| `S3_ACCESS_KEY_ID` | *(empty)* | Required |
-| `S3_SECRET_ACCESS_KEY` | *(empty)* | Required |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | *(empty)* | Required |
 | `S3_USE_SSL` | `true` | `false` for local MinIO |
-| `S3_BUCKET_NAME` | `oss-archive` | Bucket must already exist |
+| `S3_BUCKET_NAME` | `oss-archive` | Must already exist |
 | `S3_FORCE_PATH_STYLE` | `false` | `true` for MinIO |
-| `MAX_UPLOAD_MB` | `512` | Upload size cap, enforced in the presigned signature too |
-| `ALLOWED_ORIGINS` | `*` | Comma-separated CORS allowlist for browsers |
+| `DATABASE_URL` | *(empty)* | Any Postgres; for the planned history feature |
+| `AUTH_JWKS_URL` / `AUTH_ISSUER` | *(empty)* | JWKS endpoint + issuer for the planned auth feature |
 
-For presigned uploads from a browser, the *bucket* needs CORS too (allow `PUT` from your client origin). MinIO in the dev compose file already permits this; on R2/S3 add a CORS rule to the bucket.
+The service never creates buckets — create yours first (the dev compose does this for MinIO).
 
-The service never creates buckets. Create yours first (the dev compose file does this for MinIO automatically).
+### Browser uploads need bucket CORS
+
+Because uploads PUT directly to the bucket, the bucket must allow it. MinIO is permissive by default. For R2/S3, add a CORS rule allowing `PUT`/`GET` from your frontend origin and exposing `ETag`.
+
+## Auth and history (planned)
+
+Not built yet; the schema and config exist so it can be wired without a migration later. The intended design, kept vendor-neutral:
+
+- **Database**: any Postgres (`DATABASE_URL`); apply `db/migrations/0001_init.sql`. The `shares` table carries `owner_id` so history can be listed per user.
+- **Auth**: an Email-OTP provider that issues JWTs (Supabase is the first target). The backend will verify tokens against the issuer's JWKS endpoint (`AUTH_JWKS_URL`), so swapping providers is a config change. Ownership is enforced in the backend, so the schema stays plain Postgres with no vendor-specific row-level security.
+
+## Security
+
+This is an MVP. Two things to know before hosting real data:
+
+- **`GET /files`, `DELETE /files/:id`, and `POST /files/presign-upload` are unauthenticated.** Anyone can list, download, delete, or upload to the bucket. Gating these behind auth is the top roadmap item; until then, treat any deployment as fully public.
+- **The access code is enforced only on `/shares/:slug/unlock`.** Because `/files/:id` is open, the underlying object is reachable without a code today. The code becomes a real boundary once `/files` is gated.
+
+Unlock attempts are rate-limited per slug and per IP, and access codes are stored only as salted hashes.
 
 ## Project layout
 
@@ -112,32 +136,13 @@ cmd/               entrypoint
 internal/
   config/          env-based configuration
   server/          HTTP server, routes, CORS, graceful shutdown
-  handlers/        request handlers (files, health, shares)
-  shares/          share slug/code generation and verification
+  handlers/        request handlers (files, shares, health)
+  shares/          slug/code generation and verification
   storage/         S3-compatible storage client
-  models/          database row + auth identity types
+  models/          database row + auth identity types (for the planned DB)
   transport/rest/  shared response shapes
-db/
-  migrations/      database schema
+db/migrations/     database schema
 ```
-
-## Auth and history
-
-Anonymous quick-shares need no auth or database. Logged-in history adds two
-pieces, both vendor-neutral:
-
-- **Database**: any Postgres. Point `DATABASE_URL` at it and apply
-  `db/migrations/0001_init.sql`. The `shares` table stores `owner_id` (the
-  authenticated user's id) so history can be listed per owner.
-- **Auth**: an Email OTP provider that issues JWTs (Supabase today). The
-  backend verifies tokens against the issuer's JWKS endpoint
-  (`AUTH_JWKS_URL`) using its public key, so swapping providers is a config
-  change, not a code change. The frontend obtains the token with the
-  provider's SDK and the browser-safe publishable key.
-
-Ownership is enforced in the backend (queries filter by the verified
-`owner_id`), so the schema stays plain Postgres with no vendor-specific
-row-level security.
 
 ## Development
 
@@ -149,19 +154,17 @@ make help    # everything else
 
 ## Deploying
 
-Any platform that runs a container and injects env vars works. The `Dockerfile` builds a small Alpine image that runs as a non-root user and listens on `6060`.
+Any platform that runs a container and injects env vars. The `Dockerfile` builds a small Alpine image running as a non-root user on `6060`.
 
 ```bash
-docker compose up --build -d   # uses .env for credentials
+docker compose up --build -d   # reads credentials from .env
 ```
-
-For Railway and friends: point it at the repo, set the `S3_*` variables, done.
 
 ## Roadmap
 
-- Wire the `shares` table: JWT-verify middleware, write share rows, list history
-- Gate `GET /files` and `DELETE /files/:id` behind auth (they are open today)
-- Bucket lifecycle rules for physical deletion of expired files
+- Gate `GET /files` / `DELETE /files/:id` / presign-upload behind auth
+- Wire the `shares` table: JWKS-verify middleware, write share rows, list history
+- Bucket lifecycle rules to physically delete expired files
 - Email delivery of access codes
 
 ## License
