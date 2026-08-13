@@ -68,12 +68,15 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	if cfg.Auth.JWKSURL != "" {
-		v, err := auth.NewVerifier(context.Background(), cfg.Auth.JWKSURL, cfg.Auth.Issuer)
+		v, err := auth.NewVerifier(context.Background(), cfg.Auth.JWKSURL, cfg.Auth.Issuer, cfg.Auth.Audience)
 		if err != nil {
-			return nil, fmt.Errorf("initializing auth: %w", err)
+			// Anonymous sharing shouldn't be held hostage by an auth
+			// misconfiguration; the signed-in routes stay unmounted instead.
+			log.Printf("auth: DISABLED, could not initialize: %v", err)
+		} else {
+			srv.verifier = v
+			log.Println("auth: jwks verification enabled")
 		}
-		srv.verifier = v
-		log.Println("auth: jwks verification enabled")
 	} else {
 		log.Println("auth: AUTH_JWKS_URL not set, authenticated endpoints disabled")
 	}

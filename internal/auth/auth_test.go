@@ -59,7 +59,7 @@ func sign(t *testing.T, key *rsa.PrivateKey, claims jwt.MapClaims) string {
 
 func TestVerifierValidToken(t *testing.T) {
 	key, srv := newTestJWKS(t)
-	v, err := NewVerifier(context.Background(), srv.URL, testIssuer)
+	v, err := NewVerifier(context.Background(), srv.URL, testIssuer, "")
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestVerifierValidToken(t *testing.T) {
 
 func TestVerifierRejects(t *testing.T) {
 	key, srv := newTestJWKS(t)
-	v, err := NewVerifier(context.Background(), srv.URL, testIssuer)
+	v, err := NewVerifier(context.Background(), srv.URL, testIssuer, "")
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -115,4 +115,38 @@ func TestVerifierRejects(t *testing.T) {
 			t.Error("expected token without sub to be rejected")
 		}
 	})
+}
+
+func TestVerifierAudience(t *testing.T) {
+	key, srv := newTestJWKS(t)
+	v, err := NewVerifier(context.Background(), srv.URL, testIssuer, "authenticated")
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	claims := func(aud string) jwt.MapClaims {
+		return jwt.MapClaims{
+			"sub": "u", "iss": testIssuer, "aud": aud,
+			"exp": time.Now().Add(time.Hour).Unix(),
+		}
+	}
+
+	if _, err := v.parse(sign(t, key, claims("authenticated"))); err != nil {
+		t.Errorf("expected matching audience to pass: %v", err)
+	}
+	if _, err := v.parse(sign(t, key, claims("anon"))); err == nil {
+		t.Error("expected wrong audience to be rejected")
+	}
+}
+
+func TestNewVerifierRejectsEmptyJWKS(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"keys":[]}`))
+	}))
+	defer srv.Close()
+
+	if _, err := NewVerifier(context.Background(), srv.URL, testIssuer, ""); err == nil {
+		t.Error("expected an issuer with no published keys to fail at startup")
+	}
 }

@@ -46,8 +46,9 @@ type DatabaseConfig struct {
 }
 
 type AuthConfig struct {
-	JWKSURL string
-	Issuer  string
+	JWKSURL  string
+	Issuer   string
+	Audience string
 }
 
 func Load() *Config {
@@ -79,8 +80,9 @@ func Load() *Config {
 			URL: getEnv("DATABASE_URL", ""),
 		},
 		Auth: AuthConfig{
-			JWKSURL: getEnv("AUTH_JWKS_URL", ""),
-			Issuer:  getEnv("AUTH_ISSUER", ""),
+			JWKSURL:  getEnv("AUTH_JWKS_URL", ""),
+			Issuer:   getEnv("AUTH_ISSUER", ""),
+			Audience: getEnv("AUTH_AUDIENCE", ""),
 		},
 	}
 

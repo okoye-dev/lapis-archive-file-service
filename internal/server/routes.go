@@ -84,7 +84,13 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 		me.DELETE("/:slug", shareHandler.RevokeShare)
 	} else {
 		log.Println("auth: history and revoke endpoints disabled")
+		shareRoutes.GET("", authUnavailable)
+		shareRoutes.DELETE("/:slug", authUnavailable)
 	}
+}
+
+func authUnavailable(c *gin.Context) {
+	rest.Error(c, http.StatusServiceUnavailable, "Accounts are unavailable right now")
 }
 
 func limitBody(maxBytes int64) gin.HandlerFunc {

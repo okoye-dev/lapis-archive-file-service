@@ -2,9 +2,12 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/gin-gonic/gin"
@@ -16,13 +19,18 @@ import (
 const contextUserKey = "authUser"
 
 type Verifier struct {
-	keyfunc jwt.Keyfunc
-	issuer  string
+	keyfunc  jwt.Keyfunc
+	issuer   string
+	audience string
 }
 
-func NewVerifier(ctx context.Context, jwksURL, issuer string) (*Verifier, error) {
+func NewVerifier(ctx context.Context, jwksURL, issuer, audience string) (*Verifier, error) {
 	if jwksURL == "" {
 		return nil, errors.New("jwks url is empty")
+	}
+
+	if err := checkJWKSHasKeys(ctx, jwksURL); err != nil {
+		return nil, err
 	}
 
 	k, err := keyfunc.NewDefaultCtx(ctx, []string{jwksURL})
@@ -30,13 +38,48 @@ func NewVerifier(ctx context.Context, jwksURL, issuer string) (*Verifier, error)
 		return nil, fmt.Errorf("loading jwks: %w", err)
 	}
 
-	return &Verifier{keyfunc: k.Keyfunc, issuer: issuer}, nil
+	return &Verifier{keyfunc: k.Keyfunc, issuer: issuer, audience: audience}, nil
+}
+
+// An issuer still signing with a shared secret serves an empty key set, which
+// would otherwise fail confusingly on the first request instead of at boot.
+func checkJWKSHasKeys(ctx context.Context, jwksURL string) error {
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, jwksURL, nil)
+	if err != nil {
+		return fmt.Errorf("building jwks request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetching jwks: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetching jwks: unexpected status %d", resp.StatusCode)
+	}
+
+	var set struct {
+		Keys []json.RawMessage `json:"keys"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&set); err != nil {
+		return fmt.Errorf("decoding jwks: %w", err)
+	}
+	if len(set.Keys) == 0 {
+		return fmt.Errorf("jwks at %s has no keys: the issuer is still signing with a shared secret, switch it to asymmetric signing keys (ES256/RS256)", jwksURL)
+	}
+	return nil
 }
 
 func (v *Verifier) parse(tokenString string) (*domain.User, error) {
 	opts := []jwt.ParserOption{jwt.WithValidMethods([]string{"RS256", "ES256"})}
 	if v.issuer != "" {
 		opts = append(opts, jwt.WithIssuer(v.issuer))
+	}
+	if v.audience != "" {
+		opts = append(opts, jwt.WithAudience(v.audience))
 	}
 
 	token, err := jwt.Parse(tokenString, v.keyfunc, opts...)
