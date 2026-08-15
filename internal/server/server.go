@@ -23,13 +23,15 @@ import (
 )
 
 type Server struct {
-	httpServer *http.Server
-	config     *config.Config
-	storage    storage.Storage
-	shareStore handlers.ShareStore
-	verifier   *auth.Verifier
-	pool       *pgxpool.Pool
-	runner     *worker.Runner
+	httpServer  *http.Server
+	config      *config.Config
+	storage     storage.Storage
+	multipart   handlers.MultipartStorage
+	shareStore  handlers.ShareStore
+	uploadStore handlers.UploadRecorder
+	verifier    *auth.Verifier
+	pool        *pgxpool.Pool
+	runner      *worker.Runner
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -38,7 +40,7 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("initializing storage: %w", err)
 	}
 
-	srv := &Server{config: cfg, storage: s3Storage}
+	srv := &Server{config: cfg, storage: s3Storage, multipart: s3Storage}
 
 	if cfg.Database.URL != "" {
 		pool, err := pgxpool.New(context.Background(), cfg.Database.URL)
@@ -52,17 +54,29 @@ func New(cfg *config.Config) (*Server, error) {
 			return nil, fmt.Errorf("running migrations: %w", err)
 		}
 		pg := store.NewShareStore(pool)
+		uploads := store.NewUploadStore(pool)
+		auditor := audit.NewDBAuditor(pool)
 		srv.pool = pool
 		srv.shareStore = pg
+		srv.uploadStore = uploads
 		srv.runner = worker.New(
 			audit.NewDBRunRecorder(pool).Record,
 			worker.PurgeExpiredShares{
 				Store:   pg,
 				Objects: s3Storage,
-				Auditor: audit.NewDBAuditor(pool),
+				Auditor: auditor,
+			},
+			worker.PurgeExpiredUploads{
+				Store:    uploads,
+				Shares:   pg,
+				Objects:  s3Storage,
+				Auditor:  auditor,
+				AnonTTL:  time.Duration(cfg.Retention.AnonHours) * time.Hour,
+				OwnedTTL: time.Duration(cfg.Retention.OwnedHours) * time.Hour,
 			},
 		)
 		log.Println("shares: database store enabled")
+		log.Printf("retention: anonymous %dh, owned %dh", cfg.Retention.AnonHours, cfg.Retention.OwnedHours)
 	} else {
 		log.Println("shares: DATABASE_URL not set, share endpoints disabled")
 	}
@@ -96,10 +110,12 @@ func (s *Server) Start() error {
 	}
 
 	SetupRoutes(router, Deps{
-		Files:    s.storage,
-		Shares:   s.shareStore,
-		Verifier: s.verifier,
-		Config:   &s.config.Server,
+		Files:     s.storage,
+		Multipart: s.multipart,
+		Shares:    s.shareStore,
+		Uploads:   s.uploadStore,
+		Verifier:  s.verifier,
+		Config:    &s.config.Server,
 	})
 
 	s.httpServer = &http.Server{

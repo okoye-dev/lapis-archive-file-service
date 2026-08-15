@@ -1,14 +1,18 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
@@ -62,13 +66,37 @@ type PresignUploadResponse struct {
 	ExpiresIn  int    `json:"expires_in"`
 }
 
+// UploadRecorder records uploads for the retention worker. Nil without a DB.
+type UploadRecorder interface {
+	Create(ctx context.Context, up *domain.Upload) error
+}
+
 type FileHandler struct {
 	storage        storage.Storage
+	uploads        UploadRecorder
 	maxUploadBytes int64
 }
 
-func NewFileHandler(storage storage.Storage, maxUploadBytes int64) *FileHandler {
-	return &FileHandler{storage: storage, maxUploadBytes: maxUploadBytes}
+func NewFileHandler(storage storage.Storage, uploads UploadRecorder, maxUploadBytes int64) *FileHandler {
+	return &FileHandler{storage: storage, uploads: uploads, maxUploadBytes: maxUploadBytes}
+}
+
+// recordUploadFor tags the upload with its owner (when signed in) for retention.
+func recordUploadFor(c *gin.Context, uploads UploadRecorder, storageKey, fileName string, size int64) error {
+	if uploads == nil {
+		return nil
+	}
+	ownerID := ""
+	if user, ok := auth.UserFrom(c); ok {
+		ownerID = user.ID
+	}
+	return uploads.Create(c.Request.Context(), &domain.Upload{
+		StorageKey: storageKey,
+		OwnerID:    ownerID,
+		FileName:   fileName,
+		SizeBytes:  size,
+		CreatedAt:  time.Now().UTC(),
+	})
 }
 
 func (h *FileHandler) PresignUpload(c *gin.Context) {
@@ -95,6 +123,12 @@ func (h *FileHandler) PresignUpload(c *gin.Context) {
 	url, err := h.storage.GetPresignedUploadURL(c.Request.Context(), storageKey, req.Size, contentType)
 	if err != nil {
 		log.Printf("presign upload %s: %v", storageKey, err)
+		rest.InternalError(c, "Could not prepare upload")
+		return
+	}
+
+	if err := recordUploadFor(c, h.uploads, storageKey, fileName, req.Size); err != nil {
+		log.Printf("record upload %s: %v", storageKey, err)
 		rest.InternalError(c, "Could not prepare upload")
 		return
 	}

@@ -8,11 +8,18 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Logging  LoggingConfig
-	S3       S3Config
-	Database DatabaseConfig
-	Auth     AuthConfig
+	Server    ServerConfig
+	Logging   LoggingConfig
+	S3        S3Config
+	Database  DatabaseConfig
+	Auth      AuthConfig
+	Retention RetentionConfig
+}
+
+// RetentionConfig sets how long uploads are kept. Hours so tests can shrink it.
+type RetentionConfig struct {
+	AnonHours  int
+	OwnedHours int
 }
 
 type ServerConfig struct {
@@ -83,6 +90,10 @@ func Load() *Config {
 			JWKSURL:  getEnv("AUTH_JWKS_URL", ""),
 			Issuer:   getEnv("AUTH_ISSUER", ""),
 			Audience: getEnv("AUTH_AUDIENCE", ""),
+		},
+		Retention: RetentionConfig{
+			AnonHours:  getEnvInt("RETENTION_ANON_HOURS", 72),
+			OwnedHours: getEnvInt("RETENTION_OWNED_HOURS", 168),
 		},
 	}
 
