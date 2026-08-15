@@ -15,7 +15,7 @@ import (
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
 
-// R2 requires every non-final part to be the same size, so it's fixed.
+// Multipart requires every non-final part to be the same size, so it's fixed.
 const (
 	PartSize           = 8 * 1024 * 1024
 	MultipartThreshold = 2 * PartSize
@@ -212,7 +212,7 @@ func (h *MultipartHandler) Complete(c *gin.Context) {
 		return
 	}
 
-	// R2 needs parts in ascending order; the client may send them shuffled.
+	// Complete needs parts in ascending order; the client may send them shuffled.
 	sort.Slice(req.Parts, func(i, j int) bool { return req.Parts[i].PartNumber < req.Parts[j].PartNumber })
 
 	if err := h.storage.CompleteMultipartUpload(c.Request.Context(), req.StorageKey, req.UploadID, req.Parts); err != nil {

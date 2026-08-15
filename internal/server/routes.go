@@ -52,7 +52,7 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 	// their own key (the client tracks them), downloads use the capability
 	// URL below, and cleanup happens via share revoke + the purge worker.
 	// Upload endpoints are unauthenticated by design, so throttle per IP to
-	// blunt bucket-fill / R2-op abuse. A generous limit that only a script
+	// blunt bucket-fill / op abuse. A generous limit that only a script
 	// trips.
 	uploadLimit := handlers.RateLimitByIP(60, time.Minute)
 

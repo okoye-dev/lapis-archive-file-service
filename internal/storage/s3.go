@@ -117,7 +117,7 @@ func (s *S3Storage) GetPresignedUploadURL(ctx context.Context, key string, size 
 	return request.URL, nil
 }
 
-// ErrNoSuchUpload means R2 no longer has this multipart session; restart it.
+// ErrNoSuchUpload means the bucket no longer has this multipart session; restart it.
 var ErrNoSuchUpload = errors.New("multipart upload not found")
 
 type Part struct {
@@ -183,7 +183,7 @@ func (s *S3Storage) ListParts(ctx context.Context, key, uploadID string) ([]Part
 }
 
 func (s *S3Storage) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []Part) error {
-	// R2 requires ascending part numbers.
+	// Complete requires ascending part numbers.
 	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
 
 	completed := make([]types.CompletedPart, len(parts))
