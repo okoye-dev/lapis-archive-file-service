@@ -22,6 +22,8 @@ Next.js client  ──►  file service  ──►  S3-compatible bucket
 | Rate-limited, code-gated unlock | ✅ working |
 | JWKS auth + history + revoke | ✅ working (needs an OTP provider + `DATABASE_URL`) |
 | Expiry purge worker + audit trail | ✅ working |
+| Resumable multipart uploads (pause/resume) | ✅ working |
+| Retention: files deleted after 3d (7d signed-in) | ✅ working (worker + audit trail) |
 | Schema migrations | ✅ embedded runner, auto-applies on boot |
 
 ## Features
@@ -56,7 +58,12 @@ All routes are under `/api/v1`.
 | `GET` | `/health` | Liveness check |
 | `POST` | `/files/presign-upload` | Get a presigned PUT URL; the client uploads directly to the bucket |
 | `GET` | `/files/:id` | Get a presigned download URL (`?download=true` forces save-as) |
-| `POST` | `/shares` | Create a share for a file; returns a slug and a one-time access code |
+| `POST` | `/uploads/multipart/init` | Start a resumable multipart upload (fixed 8 MiB parts) |
+| `POST` | `/uploads/multipart/part` | Presign one part's PUT URL |
+| `POST` | `/uploads/multipart/status` | List the parts the bucket already holds (resume) |
+| `POST` | `/uploads/multipart/complete` | Assemble the parts into the final object |
+| `POST` | `/uploads/multipart/abort` | Cancel the upload and discard its parts |
+| `POST` | `/shares` | Create a share; re-sharing the same file keeps its link and rotates the code (3 codes max) |
 | `GET` | `/shares/:slug` | Public share metadata (name, size, expiry) — no code required |
 | `POST` | `/shares/:slug/unlock` | Exchange the access code for a presigned download URL |
 | `GET` | `/shares` | List the authenticated caller's shares (requires a bearer token) |
@@ -105,7 +112,8 @@ Env-only (12-factor). Every value has a default; only storage credentials are re
 | `S3_USE_SSL` | `true` | `false` for local MinIO |
 | `S3_BUCKET_NAME` | `oss-archive` | Must already exist |
 | `S3_FORCE_PATH_STYLE` | `false` | `true` for MinIO |
-| `DATABASE_URL` | *(empty)* | Any Postgres; enables all share endpoints + the purge worker (unset = shares return 503) |
+| `DATABASE_URL` | *(empty)* | Any Postgres; enables all share endpoints + the purge/retention workers (unset = shares return 503) |
+| `RETENTION_ANON_HOURS` / `RETENTION_OWNED_HOURS` | `72` / `168` | How long uploads are kept (anonymous / signed-in) |
 | `AUTH_JWKS_URL` / `AUTH_ISSUER` | *(empty)* | JWKS endpoint + issuer for verifying bearer tokens; enables the history + revoke endpoints |
 
 The service never creates buckets — create yours first (the dev compose does this for MinIO).
@@ -139,6 +147,9 @@ user, kept vendor-neutral:
   limited per slug and per IP.
 - **Expired shares** are deleted by the purge worker (object + row), each
   removal recorded in `audit_log`.
+- **Retention** deletes every upload 3 days after it lands (7 if the uploader
+  was signed in), live shares included; deletions and retried failures are
+  recorded in `audit_log`, runs in `job_runs`.
 
 ## Project layout
 

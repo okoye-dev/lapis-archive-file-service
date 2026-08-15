@@ -3,6 +3,7 @@ package server
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -14,10 +15,12 @@ import (
 )
 
 type Deps struct {
-	Files    storage.Storage
-	Shares   handlers.ShareStore
-	Verifier *auth.Verifier
-	Config   *config.ServerConfig
+	Files     storage.Storage
+	Multipart handlers.MultipartStorage
+	Shares    handlers.ShareStore
+	Uploads   handlers.UploadRecorder
+	Verifier  *auth.Verifier
+	Config    *config.ServerConfig
 }
 
 func SetupRoutes(router *gin.Engine, deps Deps) {
@@ -38,6 +41,8 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 	maxUploadBytes := cfg.MaxUploadMB * 1024 * 1024
 	router.MaxMultipartMemory = 32 * 1024 * 1024
 	const maxJSONBytes = 64 * 1024
+	// The multipart complete body holds up to 10000 parts (~70 bytes each).
+	const maxCompleteBytes = 2 * 1024 * 1024
 
 	api := router.Group("/api/v1")
 	api.GET("/health", handlers.HealthHandler)
@@ -46,10 +51,38 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 	// every uploader's files, and deletion is destructive. Uploads return
 	// their own key (the client tracks them), downloads use the capability
 	// URL below, and cleanup happens via share revoke + the purge worker.
-	fileHandler := handlers.NewFileHandler(deps.Files, maxUploadBytes)
+	// Upload endpoints are unauthenticated by design, so throttle per IP to
+	// blunt bucket-fill / R2-op abuse. A generous limit that only a script
+	// trips.
+	uploadLimit := handlers.RateLimitByIP(60, time.Minute)
+
+	fileHandler := handlers.NewFileHandler(deps.Files, deps.Uploads, maxUploadBytes)
 	files := api.Group("/files")
-	files.POST("/presign-upload", limitBody(maxJSONBytes), fileHandler.PresignUpload)
+	// Optional auth so a signed-in upload is tagged with its owner, which
+	// earns the longer retention window.
+	if deps.Verifier != nil {
+		files.Use(deps.Verifier.Optional())
+	}
+	files.POST("/presign-upload", uploadLimit, limitBody(maxJSONBytes), fileHandler.PresignUpload)
 	files.GET("/:id", fileHandler.GetFile)
+
+	// Multipart lives under its own group: gin cannot mix literal segments
+	// with the :id parameter above.
+	if deps.Multipart != nil {
+		mp := handlers.NewMultipartHandler(deps.Multipart, deps.Uploads, maxUploadBytes)
+		uploads := api.Group("/uploads/multipart")
+		uploads.Use(uploadLimit)
+		if deps.Verifier != nil {
+			uploads.Use(deps.Verifier.Optional())
+		}
+		uploads.POST("/init", limitBody(maxJSONBytes), mp.Init)
+		uploads.POST("/part", limitBody(maxJSONBytes), mp.PresignPart)
+		uploads.POST("/status", limitBody(maxJSONBytes), mp.Status)
+		// Complete's body carries the parts list; give it more room than the
+		// tiny control calls so large uploads (many parts) can finalize.
+		uploads.POST("/complete", limitBody(maxCompleteBytes), mp.Complete)
+		uploads.POST("/abort", limitBody(maxJSONBytes), mp.Abort)
+	}
 
 	shareRoutes := api.Group("/shares")
 

@@ -1,9 +1,26 @@
 package handlers
 
 import (
+	"net/http"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
+
+// RateLimitByIP throttles a route group per client IP.
+func RateLimitByIP(limit int, window time.Duration) gin.HandlerFunc {
+	limiter := newRateLimiter(limit, window)
+	return func(c *gin.Context) {
+		if !limiter.Allow(c.ClientIP()) {
+			rest.Error(c, http.StatusTooManyRequests, "Too many requests, slow down")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
 
 type rateLimiter struct {
 	mu      sync.Mutex

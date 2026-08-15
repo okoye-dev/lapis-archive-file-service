@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,15 +13,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	appconfig "github.com/okoye-dev/lapis-archive-file-service/internal/config"
 )
 
 const PresignTTL = time.Hour
 
-// Storage is the object store. File BYTES never pass through this service:
-// clients upload and download directly via presigned URLs. The methods here
-// are the control plane only — presign issuance, a HEAD to confirm a file
-// exists, and listing/deletion.
+// Storage is the object store. File bytes never pass through this service:
+// clients upload and download directly via presigned URLs. These methods are
+// the control plane only (presign, HEAD, delete).
 type Storage interface {
 	GetPresignedUploadURL(ctx context.Context, key string, size int64, contentType string) (string, error)
 	GetPresignedURL(ctx context.Context, key string, forceDownload bool) (string, error)
@@ -112,6 +115,115 @@ func (s *S3Storage) GetPresignedUploadURL(ctx context.Context, key string, size 
 	}
 
 	return request.URL, nil
+}
+
+// ErrNoSuchUpload means R2 no longer has this multipart session; restart it.
+var ErrNoSuchUpload = errors.New("multipart upload not found")
+
+type Part struct {
+	PartNumber int32  `json:"part_number"`
+	ETag       string `json:"etag"`
+	Size       int64  `json:"size,omitempty"`
+}
+
+func (s *S3Storage) CreateMultipartUpload(ctx context.Context, key, contentType string) (string, error) {
+	out, err := s.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+		Bucket:      aws.String(s.bucketName),
+		Key:         aws.String(key),
+		ContentType: aws.String(contentType),
+	})
+	if err != nil {
+		return "", fmt.Errorf("creating multipart upload %q: %w", key, err)
+	}
+	return aws.ToString(out.UploadId), nil
+}
+
+func (s *S3Storage) PresignUploadPart(ctx context.Context, key, uploadID string, partNumber int32) (string, error) {
+	request, err := s3.NewPresignClient(s.client).PresignUploadPart(ctx, &s3.UploadPartInput{
+		Bucket:     aws.String(s.bucketName),
+		Key:        aws.String(key),
+		UploadId:   aws.String(uploadID),
+		PartNumber: aws.Int32(partNumber),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = UploadPresignTTL
+	})
+	if err != nil {
+		return "", fmt.Errorf("presigning part %d of %q: %w", partNumber, key, err)
+	}
+	return request.URL, nil
+}
+
+// ListParts reports what the bucket actually holds, for resuming.
+func (s *S3Storage) ListParts(ctx context.Context, key, uploadID string) ([]Part, error) {
+	var parts []Part
+	var marker *string
+	for {
+		out, err := s.client.ListParts(ctx, &s3.ListPartsInput{
+			Bucket:           aws.String(s.bucketName),
+			Key:              aws.String(key),
+			UploadId:         aws.String(uploadID),
+			PartNumberMarker: marker,
+		})
+		if err != nil {
+			return nil, wrapNoSuchUpload("listing parts of %q", key, err)
+		}
+		for _, p := range out.Parts {
+			parts = append(parts, Part{
+				PartNumber: aws.ToInt32(p.PartNumber),
+				ETag:       aws.ToString(p.ETag),
+				Size:       aws.ToInt64(p.Size),
+			})
+		}
+		if !aws.ToBool(out.IsTruncated) {
+			break
+		}
+		marker = out.NextPartNumberMarker
+	}
+	return parts, nil
+}
+
+func (s *S3Storage) CompleteMultipartUpload(ctx context.Context, key, uploadID string, parts []Part) error {
+	// R2 requires ascending part numbers.
+	sort.Slice(parts, func(i, j int) bool { return parts[i].PartNumber < parts[j].PartNumber })
+
+	completed := make([]types.CompletedPart, len(parts))
+	for i, p := range parts {
+		completed[i] = types.CompletedPart{
+			PartNumber: aws.Int32(p.PartNumber),
+			ETag:       aws.String(p.ETag),
+		}
+	}
+
+	_, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:          aws.String(s.bucketName),
+		Key:             aws.String(key),
+		UploadId:        aws.String(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: completed},
+	})
+	if err != nil {
+		return wrapNoSuchUpload("completing multipart upload %q", key, err)
+	}
+	return nil
+}
+
+func (s *S3Storage) AbortMultipartUpload(ctx context.Context, key, uploadID string) error {
+	_, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(s.bucketName),
+		Key:      aws.String(key),
+		UploadId: aws.String(uploadID),
+	})
+	if err != nil {
+		return wrapNoSuchUpload("aborting multipart upload %q", key, err)
+	}
+	return nil
+}
+
+func wrapNoSuchUpload(format, key string, err error) error {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "NoSuchUpload" {
+		return ErrNoSuchUpload
+	}
+	return fmt.Errorf(format+": %w", key, err)
 }
 
 func (s *S3Storage) GetPresignedURL(ctx context.Context, key string, forceDownload bool) (string, error) {
