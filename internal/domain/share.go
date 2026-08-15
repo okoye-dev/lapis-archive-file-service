@@ -22,6 +22,8 @@ const (
 	slugAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	// No 0/O/1/I: avoids characters that are easy to misread when typed by hand.
 	codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	// Most access codes a file may have (first share plus two rotations).
+	MaxShareCount = 3
 )
 
 var (
@@ -29,6 +31,7 @@ var (
 	ErrWrongCode   = errors.New("wrong access code")
 	ErrInvalidSlug = errors.New("invalid slug")
 	ErrNotFound    = errors.New("share not found")
+	ErrShareLimit  = errors.New("share limit reached")
 )
 
 // Share is a file made shareable behind a one-time access code.
@@ -42,6 +45,7 @@ type Share struct {
 	RecipientEmail string    `json:"recipient_email,omitempty"`
 	CodeSalt       string    `json:"code_salt"`
 	CodeHash       string    `json:"code_hash"`
+	ShareCount     int       `json:"share_count"`
 	CreatedAt      time.Time `json:"created_at"`
 	ExpiresAt      time.Time `json:"expires_at"`
 }
@@ -79,11 +83,40 @@ func NewShare(storageKey, fileName string, fileSize int64, ownerID, ownerEmail, 
 		RecipientEmail: recipientEmail,
 		CodeSalt:       hex.EncodeToString(salt),
 		CodeHash:       hashCode(salt, code),
+		ShareCount:     1,
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(ttl),
 	}
 
 	return share, code, nil
+}
+
+// Rotate swaps in a new code and expiry, keeping the slug. Fails with
+// ErrShareLimit once the file has had MaxShareCount codes.
+func (s *Share) Rotate(ttl time.Duration) (string, error) {
+	if s.ShareCount >= MaxShareCount {
+		return "", ErrShareLimit
+	}
+	if ttl <= 0 || ttl > MaxTTL {
+		ttl = DefaultTTL
+	}
+
+	code, err := randomString(codeAlphabet, codeLength)
+	if err != nil {
+		return "", fmt.Errorf("generating code: %w", err)
+	}
+
+	salt := make([]byte, saltLength)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("generating salt: %w", err)
+	}
+
+	s.CodeSalt = hex.EncodeToString(salt)
+	s.CodeHash = hashCode(salt, code)
+	s.ShareCount++
+	s.ExpiresAt = time.Now().UTC().Add(ttl)
+
+	return code, nil
 }
 
 // Verify reports whether code matches (constant-time), tolerating spaces,

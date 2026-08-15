@@ -23,21 +23,25 @@ type CreateShareRequest struct {
 }
 
 type CreateShareResponse struct {
-	Slug      string    `json:"slug"`
-	Code      string    `json:"code"`
-	FileName  string    `json:"file_name"`
-	FileSize  int64     `json:"file_size"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Slug       string    `json:"slug"`
+	Code       string    `json:"code"`
+	FileName   string    `json:"file_name"`
+	FileSize   int64     `json:"file_size"`
+	ShareCount int       `json:"share_count"`
+	Rotated    bool      `json:"rotated"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
+// ShareMetaResponse is public (GET /shares/:slug needs no code), so it carries
+// only file facts, never the recipient's email.
 type ShareMetaResponse struct {
-	Slug           string    `json:"slug"`
-	FileName       string    `json:"file_name"`
-	FileSize       int64     `json:"file_size"`
-	RecipientEmail string    `json:"recipient_email,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	Expired        bool      `json:"expired"`
+	Slug       string    `json:"slug"`
+	FileName   string    `json:"file_name"`
+	FileSize   int64     `json:"file_size"`
+	ShareCount int       `json:"share_count"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Expired    bool      `json:"expired"`
 }
 
 type UnlockShareRequest struct {
@@ -68,6 +72,8 @@ const maxRecipientEmailLength = 320
 type ShareStore interface {
 	Create(ctx context.Context, s *domain.Share) error
 	GetBySlug(ctx context.Context, slug string) (*domain.Share, error)
+	GetByStorageKey(ctx context.Context, storageKey string) (*domain.Share, error)
+	RotateCode(ctx context.Context, s *domain.Share) error
 	ListByOwner(ctx context.Context, ownerID string) ([]*domain.Share, error)
 	Delete(ctx context.Context, slug, ownerID string) error
 }
@@ -111,6 +117,18 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
+	// A file keeps one link: re-sharing rotates the code on the existing share.
+	existing, err := h.store.GetByStorageKey(ctx, req.StorageKey)
+	switch {
+	case err == nil:
+		h.rotateShare(c, existing, req)
+		return
+	case !errors.Is(err, domain.ErrNotFound):
+		log.Printf("create share: lookup %s: %v", req.StorageKey, err)
+		rest.Error(c, http.StatusBadGateway, "Storage temporarily unavailable")
+		return
+	}
+
 	size, err := h.files.GetFileSize(ctx, req.StorageKey)
 	if err != nil {
 		log.Printf("create share: sizing %s: %v", req.StorageKey, err)
@@ -141,17 +159,69 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 	}
 
 	if err := h.store.Create(ctx, share); err != nil {
+		// A concurrent create won the race (unique storage_key); rotate instead.
+		if racer, gerr := h.store.GetByStorageKey(ctx, req.StorageKey); gerr == nil {
+			h.rotateShare(c, racer, req)
+			return
+		}
 		log.Printf("store share %s: %v", share.Slug, err)
 		rest.InternalError(c, "Could not create share")
 		return
 	}
 
 	rest.Success(c, CreateShareResponse{
-		Slug:      share.Slug,
-		Code:      code,
-		FileName:  share.FileName,
-		FileSize:  share.FileSize,
-		ExpiresAt: share.ExpiresAt,
+		Slug:       share.Slug,
+		Code:       code,
+		FileName:   share.FileName,
+		FileSize:   share.FileSize,
+		ShareCount: share.ShareCount,
+		ExpiresAt:  share.ExpiresAt,
+	})
+}
+
+// rotateShare re-shares an existing file: same slug, fresh code and expiry.
+func (h *ShareHandler) rotateShare(c *gin.Context, share *domain.Share, req CreateShareRequest) {
+	user, signedIn := auth.UserFrom(c)
+
+	// The storage key leaks to anyone who unlocked the share (it's in the
+	// download URL), so an owned share may only be rotated by its owner.
+	if share.OwnerID != "" {
+		if !signedIn || user.ID != share.OwnerID {
+			rest.Error(c, http.StatusForbidden,
+				"Only the person who shared this file can reshare it")
+			return
+		}
+	} else if signedIn {
+		share.OwnerID = user.ID
+	}
+	share.RecipientEmail = req.RecipientEmail
+
+	code, err := share.Rotate(time.Duration(req.TTLHours) * time.Hour)
+	if errors.Is(err, domain.ErrShareLimit) {
+		rest.Error(c, http.StatusConflict,
+			"This file has reached its share limit of 3 codes")
+		return
+	}
+	if err != nil {
+		log.Printf("rotate share %s: %v", share.Slug, err)
+		rest.InternalError(c, "Could not create share")
+		return
+	}
+
+	if err := h.store.RotateCode(c.Request.Context(), share); err != nil {
+		log.Printf("rotate share %s: %v", share.Slug, err)
+		rest.InternalError(c, "Could not create share")
+		return
+	}
+
+	rest.Success(c, CreateShareResponse{
+		Slug:       share.Slug,
+		Code:       code,
+		FileName:   share.FileName,
+		FileSize:   share.FileSize,
+		ShareCount: share.ShareCount,
+		Rotated:    true,
+		ExpiresAt:  share.ExpiresAt,
 	})
 }
 
@@ -291,12 +361,12 @@ func (h *ShareHandler) loadShare(c *gin.Context, slug string) (*domain.Share, bo
 
 func toMeta(s *domain.Share) ShareMetaResponse {
 	return ShareMetaResponse{
-		Slug:           s.Slug,
-		FileName:       s.FileName,
-		FileSize:       s.FileSize,
-		RecipientEmail: s.RecipientEmail,
-		CreatedAt:      s.CreatedAt,
-		ExpiresAt:      s.ExpiresAt,
-		Expired:        s.Expired(),
+		Slug:       s.Slug,
+		FileName:   s.FileName,
+		FileSize:   s.FileSize,
+		ShareCount: s.ShareCount,
+		CreatedAt:  s.CreatedAt,
+		ExpiresAt:  s.ExpiresAt,
+		Expired:    s.Expired(),
 	}
 }

@@ -30,12 +30,31 @@ func (s *ShareStore) Create(ctx context.Context, sh *domain.Share) error {
 	_, err := s.pool.Exec(ctx, `
 		insert into shares
 			(slug, owner_id, owner_email, recipient_email, storage_key,
-			 file_name, file_size, code_hash, code_salt, created_at, expires_at)
-		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			 file_name, file_size, code_hash, code_salt, share_count, created_at, expires_at)
+		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		sh.Slug, nullable(sh.OwnerID), nullable(sh.OwnerEmail), nullable(sh.RecipientEmail),
-		sh.StorageKey, sh.FileName, sh.FileSize, sh.CodeHash, sh.CodeSalt, sh.CreatedAt, sh.ExpiresAt)
+		sh.StorageKey, sh.FileName, sh.FileSize, sh.CodeHash, sh.CodeSalt, sh.ShareCount,
+		sh.CreatedAt, sh.ExpiresAt)
 	if err != nil {
 		return fmt.Errorf("insert share: %w", err)
+	}
+	return nil
+}
+
+// RotateCode saves a rotation. owner_id only fills from empty, never overwrites.
+func (s *ShareStore) RotateCode(ctx context.Context, sh *domain.Share) error {
+	tag, err := s.pool.Exec(ctx, `
+		update shares
+		set code_hash = $1, code_salt = $2, expires_at = $3, share_count = $4,
+		    recipient_email = $5, owner_id = coalesce(owner_id, $6)
+		where slug = $7`,
+		sh.CodeHash, sh.CodeSalt, sh.ExpiresAt, sh.ShareCount,
+		nullable(sh.RecipientEmail), nullable(sh.OwnerID), sh.Slug)
+	if err != nil {
+		return fmt.Errorf("rotate share: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
 	}
 	return nil
 }
@@ -44,7 +63,8 @@ func scanShare(row pgx.Row) (*domain.Share, error) {
 	var sh domain.Share
 	var ownerID, ownerEmail, recipientEmail *string
 	err := row.Scan(&sh.Slug, &ownerID, &ownerEmail, &recipientEmail, &sh.StorageKey,
-		&sh.FileName, &sh.FileSize, &sh.CodeHash, &sh.CodeSalt, &sh.CreatedAt, &sh.ExpiresAt)
+		&sh.FileName, &sh.FileSize, &sh.CodeHash, &sh.CodeSalt, &sh.ShareCount,
+		&sh.CreatedAt, &sh.ExpiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +81,7 @@ func scanShare(row pgx.Row) (*domain.Share, error) {
 }
 
 const selectColumns = `slug, owner_id, owner_email, recipient_email, storage_key,
-	file_name, file_size, code_hash, code_salt, created_at, expires_at`
+	file_name, file_size, code_hash, code_salt, share_count, created_at, expires_at`
 
 func (s *ShareStore) GetBySlug(ctx context.Context, slug string) (*domain.Share, error) {
 	row := s.pool.QueryRow(ctx, `select `+selectColumns+` from shares where slug = $1`, slug)
@@ -71,6 +91,18 @@ func (s *ShareStore) GetBySlug(ctx context.Context, slug string) (*domain.Share,
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get share: %w", err)
+	}
+	return sh, nil
+}
+
+func (s *ShareStore) GetByStorageKey(ctx context.Context, storageKey string) (*domain.Share, error) {
+	row := s.pool.QueryRow(ctx, `select `+selectColumns+` from shares where storage_key = $1`, storageKey)
+	sh, err := scanShare(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get share by key: %w", err)
 	}
 	return sh, nil
 }
@@ -118,6 +150,26 @@ func (s *ShareStore) DeleteBySlug(ctx context.Context, slug string) error {
 		return fmt.Errorf("delete share: %w", err)
 	}
 	return nil
+}
+
+// DeleteByStorageKey removes every share for a file and returns their slugs.
+func (s *ShareStore) DeleteByStorageKey(ctx context.Context, storageKey string) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`delete from shares where storage_key = $1 returning slug`, storageKey)
+	if err != nil {
+		return nil, fmt.Errorf("delete shares by key: %w", err)
+	}
+	defer rows.Close()
+
+	var slugs []string
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			return nil, fmt.Errorf("scan slug: %w", err)
+		}
+		slugs = append(slugs, slug)
+	}
+	return slugs, rows.Err()
 }
 
 func (s *ShareStore) Delete(ctx context.Context, slug, ownerID string) error {

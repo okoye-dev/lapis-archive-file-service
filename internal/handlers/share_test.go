@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
@@ -71,6 +72,23 @@ func (m *memStore) GetBySlug(_ context.Context, slug string) (*domain.Share, err
 	return s, nil
 }
 
+func (m *memStore) GetByStorageKey(_ context.Context, storageKey string) (*domain.Share, error) {
+	for _, s := range m.byslug {
+		if s.StorageKey == storageKey {
+			return s, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *memStore) RotateCode(_ context.Context, s *domain.Share) error {
+	if _, ok := m.byslug[s.Slug]; !ok {
+		return domain.ErrNotFound
+	}
+	m.byslug[s.Slug] = s
+	return nil
+}
+
 func (m *memStore) ListByOwner(_ context.Context, ownerID string) ([]*domain.Share, error) {
 	var out []*domain.Share
 	for _, s := range m.byslug {
@@ -103,7 +121,7 @@ func setupRouter(files *fakeStorage, store ShareStore, asUser string) *gin.Engin
 		})
 	}
 
-	fileHandler := NewFileHandler(files, 10*1024*1024)
+	fileHandler := NewFileHandler(files, nil, 10*1024*1024)
 	router.POST("/files/presign-upload", fileHandler.PresignUpload)
 
 	sh := NewShareHandler(store, files)
@@ -166,6 +184,93 @@ func TestShareLifecycle(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &unlocked)
 	if unlocked.URL == "" {
 		t.Error("no presigned url")
+	}
+}
+
+func TestShareRotation(t *testing.T) {
+	files := newFakeStorage()
+	files.seed("uuid2_notes.txt", 20)
+	router := setupRouter(files, newMemStore(), "")
+
+	w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid2_notes.txt"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var first CreateShareResponse
+	json.Unmarshal(w.Body.Bytes(), &first)
+	if first.Rotated || first.ShareCount != 1 {
+		t.Fatalf("first share: rotated=%v count=%d, want fresh 1", first.Rotated, first.ShareCount)
+	}
+
+	// Second share of the same file: same slug, new code, old code dead.
+	w = doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid2_notes.txt"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("rotate: %d %s", w.Code, w.Body.String())
+	}
+	var second CreateShareResponse
+	json.Unmarshal(w.Body.Bytes(), &second)
+	if second.Slug != first.Slug {
+		t.Errorf("slug changed on rotation: %q -> %q", first.Slug, second.Slug)
+	}
+	if !second.Rotated || second.ShareCount != 2 {
+		t.Errorf("rotation: rotated=%v count=%d, want true 2", second.Rotated, second.ShareCount)
+	}
+	if second.Code == first.Code {
+		t.Error("rotation kept the same code")
+	}
+	if !second.ExpiresAt.After(first.ExpiresAt.Add(-time.Second)) {
+		t.Errorf("rotation did not refresh expiry: %v -> %v", first.ExpiresAt, second.ExpiresAt)
+	}
+
+	if w := doJSON(router, "POST", "/shares/"+first.Slug+"/unlock", gin.H{"code": first.Code}); w.Code != http.StatusForbidden {
+		t.Errorf("old code after rotation: %d, want 403", w.Code)
+	}
+	if w := doJSON(router, "POST", "/shares/"+first.Slug+"/unlock", gin.H{"code": second.Code}); w.Code != http.StatusOK {
+		t.Errorf("new code after rotation: %d, want 200", w.Code)
+	}
+
+	// Third code generation is the last one allowed...
+	if w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid2_notes.txt"}); w.Code != http.StatusOK {
+		t.Fatalf("second rotation: %d", w.Code)
+	}
+	// ...and the fourth is refused.
+	if w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid2_notes.txt"}); w.Code != http.StatusConflict {
+		t.Errorf("over-limit share: %d, want 409", w.Code)
+	}
+}
+
+func TestRotationOwnership(t *testing.T) {
+	files := newFakeStorage()
+	files.seed("uuid3_owned.txt", 8)
+	store := newMemStore()
+
+	// Owner creates the share.
+	owned := setupRouter(files, store, "owner-1")
+	w := doJSON(owned, "POST", "/shares", gin.H{"storage_key": "uuid3_owned.txt"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("create: %d", w.Code)
+	}
+	var created CreateShareResponse
+	json.Unmarshal(w.Body.Bytes(), &created)
+
+	// An anonymous re-share of an owned file must be refused, not rotated.
+	// otherwise anyone with the storage key could reset someone's code.
+	anon := setupRouter(files, store, "")
+	if w := doJSON(anon, "POST", "/shares", gin.H{"storage_key": "uuid3_owned.txt"}); w.Code != http.StatusForbidden {
+		t.Errorf("anon rotate of owned share: %d, want 403", w.Code)
+	}
+	// A different signed-in user is equally refused.
+	other := setupRouter(files, store, "owner-2")
+	if w := doJSON(other, "POST", "/shares", gin.H{"storage_key": "uuid3_owned.txt"}); w.Code != http.StatusForbidden {
+		t.Errorf("other user rotate: %d, want 403", w.Code)
+	}
+	// The owner can still rotate their own share.
+	if w := doJSON(owned, "POST", "/shares", gin.H{"storage_key": "uuid3_owned.txt"}); w.Code != http.StatusOK {
+		t.Errorf("owner rotate: %d, want 200", w.Code)
+	}
+	sh, _ := store.GetBySlug(context.Background(), created.Slug)
+	if sh.OwnerID != "owner-1" || sh.ShareCount != 2 {
+		t.Errorf("after owner rotation: owner=%q count=%d, want owner-1 / 2", sh.OwnerID, sh.ShareCount)
 	}
 }
 
