@@ -162,7 +162,13 @@ func (s *Server) Start() error {
 
 	stopWorkers()
 	if s.runner != nil {
-		s.runner.Wait()
+		done := make(chan struct{})
+		go func() { s.runner.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(shutdownTimeout):
+			log.Println("workers did not stop in time; exiting anyway")
+		}
 	}
 	if s.pool != nil {
 		s.pool.Close()

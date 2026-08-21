@@ -62,12 +62,19 @@ func (r *Runner) loop(ctx context.Context, job Job) {
 	}
 }
 
+// perRunTimeout bounds a single pass so a stuck S3/DB call can't hang the
+// goroutine forever (and block shutdown). Generous: a normal batch is seconds.
+const perRunTimeout = 10 * time.Minute
+
 // runOnce executes a single pass with panic recovery and timing, logs the
 // outcome, and records it, so one job misbehaving never takes down the runner
 // or the process.
 func (r *Runner) runOnce(ctx context.Context, job Job) {
+	runCtx, cancel := context.WithTimeout(ctx, perRunTimeout)
+	defer cancel()
+
 	start := time.Now()
-	err := safeRun(ctx, job)
+	err := safeRun(runCtx, job)
 	end := time.Now()
 
 	if err != nil {
