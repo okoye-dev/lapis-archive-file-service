@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 )
@@ -56,6 +58,26 @@ func (s *UploadStore) ListExpired(ctx context.Context, anonBefore, ownedBefore t
 		out = append(out, &up)
 	}
 	return out, rows.Err()
+}
+
+func (s *UploadStore) GetByStorageKey(ctx context.Context, storageKey string) (*domain.Upload, error) {
+	row := s.pool.QueryRow(ctx, `
+		select storage_key, owner_id, file_name, size_bytes, created_at, delete_attempts
+		from uploads where storage_key = $1`, storageKey)
+
+	var up domain.Upload
+	var ownerID *string
+	err := row.Scan(&up.StorageKey, &ownerID, &up.FileName, &up.SizeBytes, &up.CreatedAt, &up.DeleteAttempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get upload: %w", err)
+	}
+	if ownerID != nil {
+		up.OwnerID = *ownerID
+	}
+	return &up, nil
 }
 
 func (s *UploadStore) Delete(ctx context.Context, storageKey string) error {

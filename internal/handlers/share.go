@@ -78,24 +78,60 @@ type ShareStore interface {
 	Delete(ctx context.Context, slug, ownerID string) error
 }
 
+// UploadLookup fetches a recorded upload so a share can cap its advertised
+// expiry to the file's retention deadline. Nil without a DB.
+type UploadLookup interface {
+	GetByStorageKey(ctx context.Context, storageKey string) (*domain.Upload, error)
+}
+
 type ShareHandler struct {
 	store     ShareStore
 	files     storage.Storage
+	uploads   UploadLookup
+	anonTTL   time.Duration
+	ownedTTL  time.Duration
 	perIP     *rateLimiter
 	perSlug   *rateLimiter
 	metaPerIP *rateLimiter
 }
 
-func NewShareHandler(store ShareStore, files storage.Storage) *ShareHandler {
+func NewShareHandler(store ShareStore, files storage.Storage, uploads UploadLookup, anonTTL, ownedTTL time.Duration) *ShareHandler {
 	return &ShareHandler{
-		store: store,
-		files: files,
+		store:    store,
+		files:    files,
+		uploads:  uploads,
+		anonTTL:  anonTTL,
+		ownedTTL: ownedTTL,
 		// Two independent limits on unlock attempts. perIP throttles a single
 		// client; perSlug bounds total guesses against one share regardless of
 		// source IP. metaPerIP throttles metadata reads.
 		perIP:     newRateLimiter(10, time.Minute),
 		perSlug:   newRateLimiter(30, time.Minute),
 		metaPerIP: newRateLimiter(60, time.Minute),
+	}
+}
+
+// capToRetention shortens a share's expiry so it never outlives the file. The
+// retention worker deletes the object at upload.CreatedAt + the window for its
+// owner, so the API must not promise a share that lasts past that. No-op for
+// untracked (legacy) uploads or when no DB is wired.
+func (h *ShareHandler) capToRetention(ctx context.Context, storageKey string, share *domain.Share) {
+	if h.uploads == nil {
+		return
+	}
+	up, err := h.uploads.GetByStorageKey(ctx, storageKey)
+	if err != nil {
+		return
+	}
+	window := h.anonTTL
+	if up.OwnerID != "" {
+		window = h.ownedTTL
+	}
+	if window <= 0 {
+		return
+	}
+	if deadline := up.CreatedAt.Add(window); share.ExpiresAt.After(deadline) {
+		share.ExpiresAt = deadline
 	}
 }
 
@@ -157,6 +193,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		rest.InternalError(c, "Could not create share")
 		return
 	}
+	h.capToRetention(ctx, req.StorageKey, share)
 
 	if err := h.store.Create(ctx, share); err != nil {
 		// A concurrent create won the race (unique storage_key); rotate instead.
@@ -207,6 +244,7 @@ func (h *ShareHandler) rotateShare(c *gin.Context, share *domain.Share, req Crea
 		rest.InternalError(c, "Could not create share")
 		return
 	}
+	h.capToRetention(c.Request.Context(), share.StorageKey, share)
 
 	if err := h.store.RotateCode(c.Request.Context(), share); err != nil {
 		log.Printf("rotate share %s: %v", share.Slug, err)

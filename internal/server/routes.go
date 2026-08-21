@@ -15,12 +15,15 @@ import (
 )
 
 type Deps struct {
-	Files     storage.Storage
-	Multipart handlers.MultipartStorage
-	Shares    handlers.ShareStore
-	Uploads   handlers.UploadRecorder
-	Verifier  *auth.Verifier
-	Config    *config.ServerConfig
+	Files          storage.Storage
+	Multipart      handlers.MultipartStorage
+	Shares         handlers.ShareStore
+	Uploads        handlers.UploadRecorder
+	UploadLookup   handlers.UploadLookup
+	Verifier       *auth.Verifier
+	Config         *config.ServerConfig
+	RetentionAnon  time.Duration
+	RetentionOwned time.Duration
 }
 
 func SetupRoutes(router *gin.Engine, deps Deps) {
@@ -95,7 +98,7 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 		return
 	}
 
-	shareHandler := handlers.NewShareHandler(deps.Shares, deps.Files)
+	shareHandler := handlers.NewShareHandler(deps.Shares, deps.Files, deps.UploadLookup, deps.RetentionAnon, deps.RetentionOwned)
 
 	// Optional auth on create so a signed-in user's share is tagged with their
 	// id; anonymous creation still works.

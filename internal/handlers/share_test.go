@@ -124,7 +124,7 @@ func setupRouter(files *fakeStorage, store ShareStore, asUser string) *gin.Engin
 	fileHandler := NewFileHandler(files, nil, 10*1024*1024)
 	router.POST("/files/presign-upload", fileHandler.PresignUpload)
 
-	sh := NewShareHandler(store, files)
+	sh := NewShareHandler(store, files, nil, 72*time.Hour, 168*time.Hour)
 	router.POST("/shares", sh.CreateShare)
 	router.GET("/shares", sh.ListMine)
 	router.GET("/shares/:slug", sh.GetShare)

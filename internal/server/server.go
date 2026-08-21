@@ -23,15 +23,16 @@ import (
 )
 
 type Server struct {
-	httpServer  *http.Server
-	config      *config.Config
-	storage     storage.Storage
-	multipart   handlers.MultipartStorage
-	shareStore  handlers.ShareStore
-	uploadStore handlers.UploadRecorder
-	verifier    *auth.Verifier
-	pool        *pgxpool.Pool
-	runner      *worker.Runner
+	httpServer   *http.Server
+	config       *config.Config
+	storage      storage.Storage
+	multipart    handlers.MultipartStorage
+	shareStore   handlers.ShareStore
+	uploadStore  handlers.UploadRecorder
+	uploadLookup handlers.UploadLookup
+	verifier     *auth.Verifier
+	pool         *pgxpool.Pool
+	runner       *worker.Runner
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -59,6 +60,7 @@ func New(cfg *config.Config) (*Server, error) {
 		srv.pool = pool
 		srv.shareStore = pg
 		srv.uploadStore = uploads
+		srv.uploadLookup = uploads
 		srv.runner = worker.New(
 			audit.NewDBRunRecorder(pool).Record,
 			worker.PurgeExpiredShares{
@@ -110,12 +112,15 @@ func (s *Server) Start() error {
 	}
 
 	SetupRoutes(router, Deps{
-		Files:     s.storage,
-		Multipart: s.multipart,
-		Shares:    s.shareStore,
-		Uploads:   s.uploadStore,
-		Verifier:  s.verifier,
-		Config:    &s.config.Server,
+		Files:          s.storage,
+		Multipart:      s.multipart,
+		Shares:         s.shareStore,
+		Uploads:        s.uploadStore,
+		UploadLookup:   s.uploadLookup,
+		Verifier:       s.verifier,
+		Config:         &s.config.Server,
+		RetentionAnon:  time.Duration(s.config.Retention.AnonHours) * time.Hour,
+		RetentionOwned: time.Duration(s.config.Retention.OwnedHours) * time.Hour,
 	})
 
 	s.httpServer = &http.Server{
