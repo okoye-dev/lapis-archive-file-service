@@ -100,6 +100,9 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 	// Optional auth on create so a signed-in user's share is tagged with their
 	// id; anonymous creation still works.
 	create := shareRoutes.Group("")
+	// Public and unauthenticated; each call hits the DB and a billed S3
+	// HeadObject, so throttle per IP like the upload endpoints.
+	create.Use(handlers.RateLimitByIP(30, time.Minute))
 	if deps.Verifier != nil {
 		create.Use(deps.Verifier.Optional())
 	}
