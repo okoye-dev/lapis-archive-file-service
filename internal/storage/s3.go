@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -226,17 +227,38 @@ func wrapNoSuchUpload(format, key string, err error) error {
 	return fmt.Errorf(format+": %w", key, err)
 }
 
+// inlineRiskyExt lists extensions a browser will render or script if served
+// inline. We serve them as downloads so an uploaded page can't execute on the
+// bucket origin.
+var inlineRiskyExt = map[string]bool{
+	".html": true, ".htm": true, ".xhtml": true, ".xht": true,
+	".shtml": true, ".svg": true, ".svgz": true, ".xml": true,
+}
+
+func inlineRisky(key string) bool {
+	name := key
+	if _, after, found := strings.Cut(key, "_"); found {
+		name = after
+	}
+	return inlineRiskyExt[strings.ToLower(path.Ext(name))]
+}
+
 func (s *S3Storage) GetPresignedURL(ctx context.Context, key string, forceDownload bool) (string, error) {
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
 	}
 
-	if forceDownload {
-		original := key
-		if _, name, found := strings.Cut(key, "_"); found {
-			original = name
-		}
+	original := key
+	if _, name, found := strings.Cut(key, "_"); found {
+		original = name
+	}
+
+	switch {
+	case forceDownload:
+		input.ResponseContentDisposition = aws.String(fmt.Sprintf("attachment; filename=%q", original))
+	case inlineRisky(key):
+		input.ResponseContentType = aws.String("application/octet-stream")
 		input.ResponseContentDisposition = aws.String(fmt.Sprintf("attachment; filename=%q", original))
 	}
 
