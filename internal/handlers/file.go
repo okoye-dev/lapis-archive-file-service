@@ -144,8 +144,8 @@ func (h *FileHandler) PresignUpload(c *gin.Context) {
 
 func (h *FileHandler) GetFile(c *gin.Context) {
 	storageKey := c.Param("id")
-	if storageKey == "" || strings.Contains(storageKey, "/") {
-		rest.BadRequest(c, "File ID required")
+	if !validKey(storageKey) {
+		rest.BadRequest(c, "Invalid file ID")
 		return
 	}
 

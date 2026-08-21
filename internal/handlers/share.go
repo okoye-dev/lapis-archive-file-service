@@ -106,7 +106,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		return
 	}
 
-	if strings.Contains(req.StorageKey, "/") {
+	if !validKey(req.StorageKey) {
 		rest.BadRequest(c, "Invalid storage key")
 		return
 	}
