@@ -104,7 +104,7 @@ Env-only (12-factor). Every value has a default; only storage credentials are re
 | `GIN_MODE` | `release` | `debug` for verbose logs |
 | `LOG_LEVEL` | `info` | Log verbosity |
 | `MAX_UPLOAD_MB` | `512` | Upload cap (signed into the presigned URL) |
-| `ALLOWED_ORIGINS` | `*` | Comma-separated CORS allowlist |
+| `ALLOWED_ORIGINS` | *(none)* | Comma-separated CORS allowlist; unset blocks all cross-origin, `*` allows any |
 | `TRUSTED_PROXIES` | *(none)* | CIDRs to trust for client IP; unset = trust none |
 | `S3_ENDPOINT` | *(empty)* | Empty = AWS S3; host without scheme for R2/MinIO |
 | `S3_REGION` | `us-east-1` | R2 uses `auto` |
@@ -115,6 +115,7 @@ Env-only (12-factor). Every value has a default; only storage credentials are re
 | `DATABASE_URL` | *(empty)* | Any Postgres; enables all share endpoints + the purge/retention workers (unset = shares return 503) |
 | `RETENTION_ANON_HOURS` / `RETENTION_OWNED_HOURS` | `72` / `168` | How long uploads are kept (anonymous / signed-in) |
 | `AUTH_JWKS_URL` / `AUTH_ISSUER` | *(empty)* | JWKS endpoint + issuer for verifying bearer tokens; enables the history + revoke endpoints |
+| `AUTH_AUDIENCE` | *(empty)* | Expected token audience (Supabase uses `authenticated`); unset skips the audience check |
 
 The service never creates buckets — create yours first (the dev compose does this for MinIO).
 
