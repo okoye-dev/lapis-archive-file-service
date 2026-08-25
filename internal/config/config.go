@@ -67,7 +67,7 @@ func Load() *Config {
 			IdleTimeout:     getEnvInt("IDLE_TIMEOUT", 120),
 			ShutdownTimeout: getEnvInt("SHUTDOWN_TIMEOUT", 5),
 			MaxUploadMB:     int64(getEnvInt("MAX_UPLOAD_MB", 512)),
-			AllowedOrigins:  getEnvList("ALLOWED_ORIGINS", []string{"*"}),
+			AllowedOrigins:  getEnvList("ALLOWED_ORIGINS", nil),
 			TrustedProxies:  getEnvList("TRUSTED_PROXIES", nil),
 		},
 		Logging: LoggingConfig{

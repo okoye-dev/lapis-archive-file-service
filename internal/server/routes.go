@@ -34,12 +34,19 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 		AllowHeaders:  []string{"Origin", "Content-Type", "Accept", "Authorization"},
 		ExposeHeaders: []string{"Content-Length"},
 	}
-	if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "*" {
-		corsConfig.AllowAllOrigins = true
+	// Fail closed: with ALLOWED_ORIGINS unset, register no CORS middleware so
+	// browsers block cross-origin requests by default instead of opening to all.
+	if len(cfg.AllowedOrigins) == 0 {
+		log.Println("cors: ALLOWED_ORIGINS unset; cross-origin browser requests are blocked")
 	} else {
-		corsConfig.AllowOrigins = cfg.AllowedOrigins
+		if len(cfg.AllowedOrigins) == 1 && cfg.AllowedOrigins[0] == "*" {
+			log.Println("cors: ALLOWED_ORIGINS=*; all origins allowed, set explicit origins in production")
+			corsConfig.AllowAllOrigins = true
+		} else {
+			corsConfig.AllowOrigins = cfg.AllowedOrigins
+		}
+		router.Use(cors.New(corsConfig))
 	}
-	router.Use(cors.New(corsConfig))
 
 	maxUploadBytes := cfg.MaxUploadMB * 1024 * 1024
 	router.MaxMultipartMemory = 32 * 1024 * 1024
