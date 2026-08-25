@@ -9,9 +9,10 @@ import (
 	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 )
 
+// Shared cadence for the retention and purge sweeps.
 const (
-	purgeInterval  = time.Hour
-	purgeBatchSize = 200
+	sweepInterval  = time.Hour
+	sweepBatchSize = 200
 )
 
 // ExpiredShareStore is the slice of the share store the purge job needs.
@@ -47,10 +48,10 @@ type PurgeExpiredShares struct {
 }
 
 func (PurgeExpiredShares) Name() string            { return "purge-expired-shares" }
-func (PurgeExpiredShares) Interval() time.Duration { return purgeInterval }
+func (PurgeExpiredShares) Interval() time.Duration { return sweepInterval }
 
 func (j PurgeExpiredShares) Run(ctx context.Context) error {
-	expired, err := j.Store.ListExpired(ctx, purgeBatchSize)
+	expired, err := j.Store.ListExpired(ctx, sweepBatchSize)
 	if err != nil {
 		return err
 	}

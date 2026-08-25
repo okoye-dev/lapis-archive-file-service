@@ -107,12 +107,8 @@ func (s *ShareStore) GetByStorageKey(ctx context.Context, storageKey string) (*d
 	return sh, nil
 }
 
-func (s *ShareStore) ListByOwner(ctx context.Context, ownerID string) ([]*domain.Share, error) {
-	rows, err := s.pool.Query(ctx, `select `+selectColumns+`
-		from shares where owner_id = $1 order by created_at desc`, ownerID)
-	if err != nil {
-		return nil, fmt.Errorf("list shares: %w", err)
-	}
+// scanShares drains rows into shares and closes them.
+func scanShares(rows pgx.Rows) ([]*domain.Share, error) {
 	defer rows.Close()
 
 	var out []*domain.Share
@@ -126,23 +122,22 @@ func (s *ShareStore) ListByOwner(ctx context.Context, ownerID string) ([]*domain
 	return out, rows.Err()
 }
 
+func (s *ShareStore) ListByOwner(ctx context.Context, ownerID string) ([]*domain.Share, error) {
+	rows, err := s.pool.Query(ctx, `select `+selectColumns+`
+		from shares where owner_id = $1 order by created_at desc`, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("list shares: %w", err)
+	}
+	return scanShares(rows)
+}
+
 func (s *ShareStore) ListExpired(ctx context.Context, limit int) ([]*domain.Share, error) {
 	rows, err := s.pool.Query(ctx, `select `+selectColumns+`
 		from shares where expires_at < now() order by expires_at asc limit $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list expired: %w", err)
 	}
-	defer rows.Close()
-
-	var out []*domain.Share
-	for rows.Next() {
-		sh, err := scanShare(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan share: %w", err)
-		}
-		out = append(out, sh)
-	}
-	return out, rows.Err()
+	return scanShares(rows)
 }
 
 func (s *ShareStore) DeleteBySlug(ctx context.Context, slug string) error {

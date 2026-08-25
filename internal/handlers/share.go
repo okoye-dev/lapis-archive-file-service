@@ -64,7 +64,7 @@ type RevokeShareResponse struct {
 	Revoked string `json:"revoked"`
 }
 
-const maxRecipientEmailLength = 320
+const maxEmailLength = 320
 
 // ShareStore is the slice of the share store the handlers need, declared here
 // at the consumer so it stays minimal and the concrete DBStore need not be an
@@ -146,7 +146,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		rest.BadRequest(c, "Invalid storage key")
 		return
 	}
-	if len(req.RecipientEmail) > maxRecipientEmailLength || len(req.OwnerEmail) > maxRecipientEmailLength {
+	if len(req.RecipientEmail) > maxEmailLength || len(req.OwnerEmail) > maxEmailLength {
 		rest.BadRequest(c, "Email too long")
 		return
 	}

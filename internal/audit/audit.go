@@ -43,11 +43,6 @@ func (a *DBAuditor) Record(ctx context.Context, action, subject string, detail a
 	return nil
 }
 
-// Nop discards audit records; used when no database is configured.
-type Nop struct{}
-
-func (Nop) Record(context.Context, string, string, any) error { return nil }
-
 // DBRunRecorder stores worker run history in job_runs. It satisfies
 // worker.Recorder (matched structurally, no import). Failures to record are
 // logged, never propagated — run history must not affect the job itself.

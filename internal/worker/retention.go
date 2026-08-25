@@ -9,11 +9,6 @@ import (
 	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 )
 
-const (
-	retentionInterval  = time.Hour
-	retentionBatchSize = 200
-)
-
 type ExpiredUploadStore interface {
 	ListExpired(ctx context.Context, anonBefore, ownedBefore time.Time, limit int) ([]*domain.Upload, error)
 	Delete(ctx context.Context, storageKey string) error
@@ -53,11 +48,11 @@ type PurgeExpiredUploads struct {
 }
 
 func (PurgeExpiredUploads) Name() string            { return "purge-expired-uploads" }
-func (PurgeExpiredUploads) Interval() time.Duration { return retentionInterval }
+func (PurgeExpiredUploads) Interval() time.Duration { return sweepInterval }
 
 func (j PurgeExpiredUploads) Run(ctx context.Context) error {
 	now := time.Now().UTC()
-	expired, err := j.Store.ListExpired(ctx, now.Add(-j.AnonTTL), now.Add(-j.OwnedTTL), retentionBatchSize)
+	expired, err := j.Store.ListExpired(ctx, now.Add(-j.AnonTTL), now.Add(-j.OwnedTTL), sweepBatchSize)
 	if err != nil {
 		return err
 	}
