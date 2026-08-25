@@ -86,6 +86,9 @@ func (j PurgeExpiredUploads) Run(ctx context.Context) error {
 		if err := j.Store.Delete(ctx, up.StorageKey); err != nil {
 			failed++
 			log.Printf("retention: delete row %s: %v", up.StorageKey, err)
+			if merr := j.Store.MarkDeleteFailed(ctx, up.StorageKey, err.Error()); merr != nil {
+				log.Printf("retention: mark failed %s: %v", up.StorageKey, merr)
+			}
 			continue
 		}
 
