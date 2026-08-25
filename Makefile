@@ -1,5 +1,8 @@
 .PHONY: help dev dev-stop dev-logs run run-remote migrate build test fmt vet check prod prod-logs prod-stop minio clean
 
+# Env file for migrate; override with `make migrate ENV=.env`.
+ENV ?= .env.local
+
 help:
 	@echo "Lapis Archive File Service"
 	@echo ""
@@ -32,13 +35,13 @@ dev:
 	@echo "Next: make run"
 
 run:
-	@export $$(cat .env.local | grep -v '^#' | xargs) && go run ./cmd
+	@set -a; . ./.env.local; set +a; go run ./cmd
 
 run-remote:
-	@export $$(cat .env | grep -v '^#' | xargs) && go run ./cmd
+	@set -a; . ./.env; set +a; go run ./cmd
 
 migrate:
-	@export $$(cat .env.local | grep -v '^#' | xargs) && go run ./cmd/migrate
+	@set -a; . ./$(ENV); set +a; go run ./cmd/migrate
 
 dev-stop:
 	docker compose -f docker-compose.dev.yml down
