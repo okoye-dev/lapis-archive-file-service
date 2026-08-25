@@ -5,13 +5,13 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storagekey"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
 
@@ -172,10 +172,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 		return
 	}
 
-	_, fileName, found := strings.Cut(req.StorageKey, "_")
-	if !found {
-		fileName = req.StorageKey
-	}
+	_, fileName := storagekey.Split(req.StorageKey)
 
 	// Owner comes from the verified token when signed in; the request's
 	// owner_email is only a fallback for anonymous shares.

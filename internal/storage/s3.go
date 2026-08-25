@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	appconfig "github.com/okoye-dev/lapis-archive-file-service/internal/config"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storagekey"
 )
 
 const PresignTTL = time.Hour
@@ -236,10 +237,7 @@ var inlineRiskyExt = map[string]bool{
 }
 
 func inlineRisky(key string) bool {
-	name := key
-	if _, after, found := strings.Cut(key, "_"); found {
-		name = after
-	}
+	_, name := storagekey.Split(key)
 	return inlineRiskyExt[strings.ToLower(path.Ext(name))]
 }
 
@@ -249,10 +247,7 @@ func (s *S3Storage) GetPresignedURL(ctx context.Context, key string, forceDownlo
 		Key:    aws.String(key),
 	}
 
-	original := key
-	if _, name, found := strings.Cut(key, "_"); found {
-		original = name
-	}
+	_, original := storagekey.Split(key)
 
 	switch {
 	case forceDownload:

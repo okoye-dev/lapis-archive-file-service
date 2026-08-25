@@ -3,15 +3,14 @@ package handlers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"sort"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storagekey"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
 
@@ -108,7 +107,7 @@ func (h *MultipartHandler) Init(c *gin.Context) {
 
 	fileName := sanitizeFilename(req.Name)
 	fileID := uuid.New().String()
-	storageKey := fmt.Sprintf("%s_%s", fileID, fileName)
+	storageKey := storagekey.Build(fileID, fileName)
 
 	contentType := req.ContentType
 	if contentType == "" {
@@ -220,7 +219,7 @@ func (h *MultipartHandler) Complete(c *gin.Context) {
 		return
 	}
 
-	fileID, fileName, _ := strings.Cut(req.StorageKey, "_")
+	fileID, fileName := storagekey.Split(req.StorageKey)
 	rest.Success(c, MultipartCompleteResponse{
 		StorageKey: req.StorageKey,
 		ID:         fileID,

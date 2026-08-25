@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"path"
@@ -14,6 +13,7 @@ import (
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storagekey"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/transport/rest"
 )
 
@@ -113,7 +113,7 @@ func (h *FileHandler) PresignUpload(c *gin.Context) {
 
 	fileName := sanitizeFilename(req.Name)
 	fileID := uuid.New().String()
-	storageKey := fmt.Sprintf("%s_%s", fileID, fileName)
+	storageKey := storagekey.Build(fileID, fileName)
 
 	contentType := req.ContentType
 	if contentType == "" {
