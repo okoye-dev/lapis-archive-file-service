@@ -219,14 +219,14 @@ func (h *ShareHandler) rotateShare(c *gin.Context, share *domain.Share, req Crea
 
 	// The storage key leaks to anyone who unlocked the share (it's in the
 	// download URL), so an owned share may only be rotated by its owner.
+	// Anonymous shares stay ownerless: rotating never grants ownership, so a
+	// key-holder can't seize someone else's link into their account.
 	if share.OwnerID != "" {
 		if !signedIn || user.ID != share.OwnerID {
 			rest.Error(c, http.StatusForbidden,
 				"Only the person who shared this file can reshare it")
 			return
 		}
-	} else if signedIn {
-		share.OwnerID = user.ID
 	}
 	share.RecipientEmail = req.RecipientEmail
 

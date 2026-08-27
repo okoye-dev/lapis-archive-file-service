@@ -274,6 +274,35 @@ func TestRotationOwnership(t *testing.T) {
 	}
 }
 
+func TestRotationDoesNotClaimAnonShare(t *testing.T) {
+	files := newFakeStorage()
+	files.seed("uuid_anon.txt", 8)
+	store := newMemStore()
+
+	// Anonymous create.
+	anon := setupRouter(files, store, "")
+	w := doJSON(anon, "POST", "/shares", gin.H{"storage_key": "uuid_anon.txt"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("anon create: %d", w.Code)
+	}
+	var created CreateShareResponse
+	json.Unmarshal(w.Body.Bytes(), &created)
+
+	// A signed-in user re-shares it: allowed to rotate, but must not become owner.
+	signed := setupRouter(files, store, "sneaky")
+	if w := doJSON(signed, "POST", "/shares", gin.H{"storage_key": "uuid_anon.txt"}); w.Code != http.StatusOK {
+		t.Fatalf("signed rotate of anon share: %d, want 200", w.Code)
+	}
+	sh, _ := store.GetBySlug(context.Background(), created.Slug)
+	if sh.OwnerID != "" {
+		t.Errorf("anon share claimed on rotate: owner=%q, want empty", sh.OwnerID)
+	}
+	// It must not surface in the would-be claimant's account.
+	if w := doJSON(signed, "GET", "/shares", nil); bytes.Contains(w.Body.Bytes(), []byte(created.Slug)) {
+		t.Error("rotated anon share leaked into the signed-in user's list")
+	}
+}
+
 func TestShareNotFound(t *testing.T) {
 	router := setupRouter(newFakeStorage(), newMemStore(), "")
 

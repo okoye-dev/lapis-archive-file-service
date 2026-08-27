@@ -41,15 +41,16 @@ func (s *ShareStore) Create(ctx context.Context, sh *domain.Share) error {
 	return nil
 }
 
-// RotateCode saves a rotation. owner_id only fills from empty, never overwrites.
+// RotateCode saves a rotation (new code, expiry, count). Ownership is never
+// changed here, so a rotation can't reassign a share's owner.
 func (s *ShareStore) RotateCode(ctx context.Context, sh *domain.Share) error {
 	tag, err := s.pool.Exec(ctx, `
 		update shares
 		set code_hash = $1, code_salt = $2, expires_at = $3, share_count = $4,
-		    recipient_email = $5, owner_id = coalesce(owner_id, $6)
-		where slug = $7`,
+		    recipient_email = $5
+		where slug = $6`,
 		sh.CodeHash, sh.CodeSalt, sh.ExpiresAt, sh.ShareCount,
-		nullable(sh.RecipientEmail), nullable(sh.OwnerID), sh.Slug)
+		nullable(sh.RecipientEmail), sh.Slug)
 	if err != nil {
 		return fmt.Errorf("rotate share: %w", err)
 	}
