@@ -10,9 +10,10 @@ import (
 )
 
 type fakeUploadStore struct {
-	uploads []*domain.Upload
-	deleted []string
-	failed  map[string]int
+	uploads    []*domain.Upload
+	deleted    []string
+	failed     map[string]int
+	failDelete map[string]bool
 }
 
 func (f *fakeUploadStore) ListExpired(_ context.Context, anonBefore, ownedBefore time.Time, limit int) ([]*domain.Upload, error) {
@@ -31,6 +32,9 @@ func (f *fakeUploadStore) ListExpired(_ context.Context, anonBefore, ownedBefore
 }
 
 func (f *fakeUploadStore) Delete(_ context.Context, key string) error {
+	if f.failDelete[key] {
+		return errors.New("db unavailable")
+	}
 	f.deleted = append(f.deleted, key)
 	return nil
 }
@@ -43,10 +47,16 @@ func (f *fakeUploadStore) MarkDeleteFailed(_ context.Context, key, _ string) err
 	return nil
 }
 
-type fakeShareRemover struct{ removed []string }
+type fakeShareRemover struct {
+	removed []string
+	err     error
+}
 
 func (f *fakeShareRemover) DeleteByStorageKey(_ context.Context, key string) ([]string, error) {
 	f.removed = append(f.removed, key)
+	if f.err != nil {
+		return nil, f.err
+	}
 	return []string{"slug-for-" + key}, nil
 }
 
@@ -139,5 +149,55 @@ func TestRetentionRetriesFailures(t *testing.T) {
 	}
 	if ok != 1 || failed != 1 {
 		t.Errorf("audit = %v, want 1 purge_upload + 1 purge_upload_failed", auditor.actions)
+	}
+}
+
+func TestRetentionShareRemovalFailureStillPurges(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeUploadStore{uploads: []*domain.Upload{
+		{StorageKey: "anon-old", CreatedAt: now.Add(-4 * 24 * time.Hour)},
+	}}
+	shares := &fakeShareRemover{err: errors.New("shares db down")}
+	objects := &flakyObjects{}
+	auditor := &fakeAuditor{}
+
+	if err := newRetentionJob(store, shares, objects, auditor).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// A failed share cleanup must not block deleting the object and its row.
+	if len(objects.deleted) != 1 || len(store.deleted) != 1 {
+		t.Errorf("objects=%v rows=%v, want 1 each despite share failure", objects.deleted, store.deleted)
+	}
+	if len(auditor.actions) != 1 || auditor.actions[0] != "purge_upload" {
+		t.Errorf("audit = %v, want 1 purge_upload", auditor.actions)
+	}
+}
+
+func TestRetentionRowDeleteFailure(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeUploadStore{
+		uploads:    []*domain.Upload{{StorageKey: "anon-old", CreatedAt: now.Add(-4 * 24 * time.Hour)}},
+		failDelete: map[string]bool{"anon-old": true},
+	}
+	shares := &fakeShareRemover{}
+	objects := &flakyObjects{}
+	auditor := &fakeAuditor{}
+
+	if err := newRetentionJob(store, shares, objects, auditor).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// The object is gone but the row delete failed: mark it, don't audit success.
+	if len(objects.deleted) != 1 {
+		t.Errorf("object should still be deleted: %v", objects.deleted)
+	}
+	if store.failed["anon-old"] != 1 {
+		t.Errorf("row-delete failure not marked: %v", store.failed)
+	}
+	for _, a := range auditor.actions {
+		if a == "purge_upload" {
+			t.Errorf("should not audit purge_upload when the row delete failed: %v", auditor.actions)
+		}
 	}
 }
