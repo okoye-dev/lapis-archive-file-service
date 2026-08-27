@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/auth"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 )
 
 // fakeStorage implements storage.Storage; it only tracks object sizes since
@@ -36,7 +37,7 @@ func (f *fakeStorage) DeleteFile(_ context.Context, key string) error {
 func (f *fakeStorage) GetFileSize(_ context.Context, key string) (int64, error) {
 	size, ok := f.sizes[key]
 	if !ok {
-		return 0, fmt.Errorf("not found: %s", key)
+		return 0, storage.ErrObjectNotFound
 	}
 	return size, nil
 }

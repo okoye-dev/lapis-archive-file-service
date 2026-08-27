@@ -87,16 +87,30 @@ func (s *S3Storage) DeleteFile(ctx context.Context, key string) error {
 	return nil
 }
 
+// ErrObjectNotFound means the bucket has no object at this key.
+var ErrObjectNotFound = errors.New("object not found")
+
 func (s *S3Storage) GetFileSize(ctx context.Context, key string) (int64, error) {
 	result, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return 0, fmt.Errorf("sizing %q: %w", key, err)
+		return 0, wrapNotFound("sizing %q", key, err)
 	}
 
 	return aws.ToInt64(result.ContentLength), nil
+}
+
+func wrapNotFound(format, key string, err error) error {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "NotFound", "NoSuchKey":
+			return ErrObjectNotFound
+		}
+	}
+	return fmt.Errorf(format+": %w", key, err)
 }
 
 const UploadPresignTTL = 15 * time.Minute

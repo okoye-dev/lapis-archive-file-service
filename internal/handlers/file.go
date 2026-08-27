@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"path"
@@ -146,6 +147,19 @@ func (h *FileHandler) GetFile(c *gin.Context) {
 	storageKey := c.Param("id")
 	if !validKey(storageKey) {
 		rest.BadRequest(c, "Invalid file ID")
+		return
+	}
+
+	// Presigning is local signing that never checks the bucket, so confirm the
+	// object exists (it may have been purged by retention) before handing back a
+	// URL that would only 404 at the bucket.
+	if _, err := h.storage.GetFileSize(c.Request.Context(), storageKey); err != nil {
+		if errors.Is(err, storage.ErrObjectNotFound) {
+			rest.NotFound(c, "File not found")
+			return
+		}
+		log.Printf("head %s: %v", storageKey, err)
+		rest.Error(c, http.StatusBadGateway, "Storage temporarily unavailable")
 		return
 	}
 
