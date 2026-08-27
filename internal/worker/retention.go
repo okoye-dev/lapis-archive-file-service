@@ -2,11 +2,13 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log"
 	"time"
 
 	"github.com/okoye-dev/lapis-archive-file-service/internal/audit"
 	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 )
 
 type ExpiredUploadStore interface {
@@ -18,6 +20,13 @@ type ExpiredUploadStore interface {
 // ShareRemover removes a file's shares when its object is deleted.
 type ShareRemover interface {
 	DeleteByStorageKey(ctx context.Context, storageKey string) ([]string, error)
+}
+
+// RetentionObjects is the object storage the retention job needs: a HEAD to
+// confirm existence and a delete.
+type RetentionObjects interface {
+	GetFileSize(ctx context.Context, key string) (int64, error)
+	DeleteFile(ctx context.Context, key string) error
 }
 
 // PurgedUpload is the audit snapshot kept after the row is gone.
@@ -40,7 +49,7 @@ type PurgeFailure struct {
 type PurgeExpiredUploads struct {
 	Store   ExpiredUploadStore
 	Shares  ShareRemover
-	Objects ObjectDeleter
+	Objects RetentionObjects
 	Auditor audit.Auditor
 
 	AnonTTL  time.Duration
@@ -59,6 +68,29 @@ func (j PurgeExpiredUploads) Run(ctx context.Context) error {
 
 	deleted, failed := 0, 0
 	for _, up := range expired {
+		// Confirm the object exists before treating this as a purge. An upload
+		// row is written at presign time, so an abandoned upload leaves a row
+		// with no object; drop it without a bogus purge_upload audit.
+		size, err := j.Objects.GetFileSize(ctx, up.StorageKey)
+		if errors.Is(err, storage.ErrObjectNotFound) {
+			if derr := j.Store.Delete(ctx, up.StorageKey); derr != nil {
+				failed++
+				log.Printf("retention: delete orphan row %s: %v", up.StorageKey, derr)
+				if merr := j.Store.MarkDeleteFailed(ctx, up.StorageKey, derr.Error()); merr != nil {
+					log.Printf("retention: mark failed %s: %v", up.StorageKey, merr)
+				}
+			}
+			continue
+		}
+		if err != nil {
+			failed++
+			log.Printf("retention: head %s: %v", up.StorageKey, err)
+			if merr := j.Store.MarkDeleteFailed(ctx, up.StorageKey, err.Error()); merr != nil {
+				log.Printf("retention: mark failed %s: %v", up.StorageKey, merr)
+			}
+			continue
+		}
+
 		if err := j.Objects.DeleteFile(ctx, up.StorageKey); err != nil {
 			failed++
 			log.Printf("retention: delete object %s (attempt %d): %v", up.StorageKey, up.DeleteAttempts+1, err)
@@ -91,7 +123,7 @@ func (j PurgeExpiredUploads) Run(ctx context.Context) error {
 			StorageKey:        up.StorageKey,
 			OwnerID:           up.OwnerID,
 			FileName:          up.FileName,
-			SizeBytes:         up.SizeBytes,
+			SizeBytes:         size, // actual object size, reconciled from HEAD
 			CreatedAt:         up.CreatedAt,
 			DeletedShareSlugs: slugs,
 		}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/okoye-dev/lapis-archive-file-service/internal/domain"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/storage"
 )
 
 type fakeUploadStore struct {
@@ -61,8 +62,16 @@ func (f *fakeShareRemover) DeleteByStorageKey(_ context.Context, key string) ([]
 }
 
 type flakyObjects struct {
-	deleted []string
-	failOn  map[string]error
+	deleted  []string
+	failOn   map[string]error
+	notFound map[string]bool
+}
+
+func (f *flakyObjects) GetFileSize(_ context.Context, key string) (int64, error) {
+	if f.notFound[key] {
+		return 0, storage.ErrObjectNotFound
+	}
+	return 100, nil
 }
 
 func (f *flakyObjects) DeleteFile(_ context.Context, key string) error {
@@ -199,5 +208,32 @@ func TestRetentionRowDeleteFailure(t *testing.T) {
 		if a == "purge_upload" {
 			t.Errorf("should not audit purge_upload when the row delete failed: %v", auditor.actions)
 		}
+	}
+}
+
+func TestRetentionSkipsOrphanRows(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeUploadStore{uploads: []*domain.Upload{
+		{StorageKey: "orphan", CreatedAt: now.Add(-4 * 24 * time.Hour)},
+		{StorageKey: "real", CreatedAt: now.Add(-4 * 24 * time.Hour)},
+	}}
+	shares := &fakeShareRemover{}
+	objects := &flakyObjects{notFound: map[string]bool{"orphan": true}}
+	auditor := &fakeAuditor{}
+
+	if err := newRetentionJob(store, shares, objects, auditor).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// The orphan (row but no object) is dropped without deleting an object or
+	// auditing a purge; only the real file is purged and audited.
+	if len(objects.deleted) != 1 || objects.deleted[0] != "real" {
+		t.Errorf("deleted objects = %v, want [real]", objects.deleted)
+	}
+	if len(store.deleted) != 2 {
+		t.Errorf("deleted rows = %v, want both rows gone", store.deleted)
+	}
+	if len(auditor.actions) != 1 || auditor.actions[0] != "purge_upload" {
+		t.Errorf("audit = %v, want 1 purge_upload (real only)", auditor.actions)
 	}
 }
