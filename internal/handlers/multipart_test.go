@@ -174,3 +174,43 @@ func TestMultipartVanishedSessionIs404(t *testing.T) {
 		t.Errorf("abort vanished: %d, want 200", w.Code)
 	}
 }
+
+func TestValidKey(t *testing.T) {
+	valid := []string{"uuid_photo.jpg", "abc_" + strings.Repeat("x", 180)}
+	for _, k := range valid {
+		if !validKey(k) {
+			t.Errorf("validKey(%q) = false, want true", k)
+		}
+	}
+	bad := []string{"", "a/b", `a\b`, "a\x00b", "a\x7fb", strings.Repeat("a", maxKeyLength+1)}
+	for _, k := range bad {
+		if validKey(k) {
+			t.Errorf("validKey(%q) = true, want false", k)
+		}
+	}
+}
+
+func TestMultipartRejectsBadKey(t *testing.T) {
+	router := setupMultipartRouter(newFakeMultipart())
+	for _, path := range []string{"status", "part", "complete"} {
+		w := doJSON(router, "POST", "/uploads/multipart/"+path, gin.H{
+			"storage_key": `uuid\evil.bin`,
+			"upload_id":   "x",
+			"part_number": 1,
+			"parts":       []gin.H{{"part_number": 1, "etag": "a"}},
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s with backslash key: %d, want 400", path, w.Code)
+		}
+	}
+}
+
+func TestMultipartPartNumberBound(t *testing.T) {
+	router := setupMultipartRouter(newFakeMultipart())
+	w := doJSON(router, "POST", "/uploads/multipart/part", gin.H{
+		"storage_key": "uuid_x.bin", "upload_id": "x", "part_number": maxParts + 1,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("part_number over max: %d, want 400", w.Code)
+	}
+}

@@ -381,3 +381,38 @@ func TestPresignUpload(t *testing.T) {
 		t.Errorf("missing size: %d, want 400", w.Code)
 	}
 }
+
+// raceStore fails the first Create (as if a concurrent request won the unique
+// storage_key), having already stored the winner under a different slug.
+type raceStore struct {
+	*memStore
+	failCreateOnce bool
+}
+
+func (r *raceStore) Create(ctx context.Context, s *domain.Share) error {
+	if r.failCreateOnce {
+		r.failCreateOnce = false
+		winner, _, _ := domain.NewShare(s.StorageKey, s.FileName, s.FileSize, "", "", "", time.Hour)
+		r.memStore.byslug[winner.Slug] = winner
+		return fmt.Errorf("duplicate storage_key")
+	}
+	return r.memStore.Create(ctx, s)
+}
+
+func TestCreateShareRaceRecovers(t *testing.T) {
+	files := newFakeStorage()
+	files.seed("uuid_race.pdf", 10)
+	store := &raceStore{memStore: newMemStore(), failCreateOnce: true}
+	router := setupRouter(files, store, "")
+
+	w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid_race.pdf"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("race create: %d %s", w.Code, w.Body.String())
+	}
+	var resp CreateShareResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	// Losing the create race falls back to rotating the winner, not a 500.
+	if !resp.Rotated {
+		t.Errorf("expected Rotated=true after losing the create race, got %+v", resp)
+	}
+}
