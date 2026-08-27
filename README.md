@@ -123,6 +123,10 @@ The service never creates buckets — create yours first (the dev compose does t
 
 Because uploads PUT directly to the bucket, the bucket must allow it. MinIO is permissive by default. For R2/S3, add a CORS rule allowing `PUT`/`GET` from your frontend origin and exposing `ETag`.
 
+### Reclaim abandoned multipart uploads
+
+A multipart upload the client never completes or aborts leaves billable in-progress parts. Reclaim them with a bucket lifecycle rule, not code: in the Cloudflare R2 dashboard (Bucket → Settings → Object lifecycle rules) add a rule to **abort incomplete multipart uploads after 1 day** (`AbortIncompleteMultipartUpload` on AWS S3). The retention worker only deletes finished objects, so this rule is what cleans up interrupted sessions.
+
 ## Auth and history
 
 Anonymous quick-shares need no auth. History and revoke require a signed-in
