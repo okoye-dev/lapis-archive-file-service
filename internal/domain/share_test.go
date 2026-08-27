@@ -109,3 +109,76 @@ func TestUniqueness(t *testing.T) {
 		seen[share.Slug] = true
 	}
 }
+
+func TestRotate(t *testing.T) {
+	share, first, err := NewShare("k_f.txt", "f.txt", 1, "", "", "", 1*time.Hour)
+	if err != nil {
+		t.Fatalf("NewShare: %v", err)
+	}
+	if share.ShareCount != 1 {
+		t.Fatalf("initial ShareCount = %d, want 1", share.ShareCount)
+	}
+	slug, firstExpiry := share.Slug, share.ExpiresAt
+
+	second, err := share.Rotate(3 * time.Hour)
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if second == first {
+		t.Error("rotate returned the same code")
+	}
+	if share.Slug != slug {
+		t.Error("rotate changed the slug")
+	}
+	if share.ShareCount != 2 {
+		t.Errorf("ShareCount = %d, want 2", share.ShareCount)
+	}
+	if !share.ExpiresAt.After(firstExpiry) {
+		t.Error("rotate did not extend the expiry")
+	}
+	if err := share.Verify(first); !errors.Is(err, ErrWrongCode) {
+		t.Errorf("old code Verify = %v, want ErrWrongCode", err)
+	}
+	if err := share.Verify(second); err != nil {
+		t.Errorf("new code Verify = %v, want nil", err)
+	}
+}
+
+func TestRotateClampsTTL(t *testing.T) {
+	cases := []struct{ ttl, want time.Duration }{
+		{0, DefaultTTL},
+		{30 * 24 * time.Hour, DefaultTTL},
+		{2 * time.Hour, 2 * time.Hour},
+	}
+	for _, c := range cases {
+		share, _, _ := NewShare("k_f.txt", "f.txt", 1, "", "", "", 0)
+		now := time.Now().UTC()
+		if _, err := share.Rotate(c.ttl); err != nil {
+			t.Fatalf("Rotate(%v): %v", c.ttl, err)
+		}
+		got := share.ExpiresAt.Sub(now)
+		if got < c.want-time.Minute || got > c.want+time.Minute {
+			t.Errorf("Rotate(%v) expiry in %v, want ~%v", c.ttl, got, c.want)
+		}
+	}
+}
+
+func TestRotateShareLimit(t *testing.T) {
+	share, _, _ := NewShare("k_f.txt", "f.txt", 1, "", "", "", 0) // count 1
+	if _, err := share.Rotate(0); err != nil {                    // count 2
+		t.Fatalf("rotate 1: %v", err)
+	}
+	if _, err := share.Rotate(0); err != nil { // count 3
+		t.Fatalf("rotate 2: %v", err)
+	}
+	code, err := share.Rotate(0) // would be 4: over the cap
+	if !errors.Is(err, ErrShareLimit) {
+		t.Errorf("third rotate = %v, want ErrShareLimit", err)
+	}
+	if code != "" {
+		t.Errorf("code at cap = %q, want empty", code)
+	}
+	if share.ShareCount != MaxShareCount {
+		t.Errorf("ShareCount = %d, want %d unchanged at cap", share.ShareCount, MaxShareCount)
+	}
+}
