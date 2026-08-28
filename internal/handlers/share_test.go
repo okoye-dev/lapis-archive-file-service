@@ -451,6 +451,22 @@ func TestCreateShareRaceRecovers(t *testing.T) {
 	}
 }
 
+func TestRotationMissingObject(t *testing.T) {
+	files := newFakeStorage()
+	files.seed("uuid_gone.txt", 8)
+	store := newMemStore()
+	router := setupRouter(files, store, "")
+
+	if w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid_gone.txt"}); w.Code != http.StatusOK {
+		t.Fatalf("first share: %d", w.Code)
+	}
+	// The object is purged; re-sharing must 404, not mint a code for it.
+	files.DeleteFile(context.Background(), "uuid_gone.txt")
+	if w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid_gone.txt"}); w.Code != http.StatusNotFound {
+		t.Errorf("re-share of purged file: %d, want 404", w.Code)
+	}
+}
+
 func TestCreateShareTransientError(t *testing.T) {
 	files := newFakeStorage()
 	files.headErr = map[string]error{"uuid_x.pdf": fmt.Errorf("s3 unavailable")}

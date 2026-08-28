@@ -234,6 +234,18 @@ func (h *ShareHandler) rotateShare(c *gin.Context, share *domain.Share, req Crea
 	}
 	share.RecipientEmail = req.RecipientEmail
 
+	// Don't mint a fresh code for a file whose object is already gone (mirrors
+	// the new-share path, which HEADs before creating).
+	if _, err := h.files.GetFileSize(c.Request.Context(), share.StorageKey); err != nil {
+		if errors.Is(err, storage.ErrObjectNotFound) {
+			rest.NotFound(c, "File not found")
+			return
+		}
+		log.Printf("rotate share: sizing %s: %v", share.StorageKey, err)
+		rest.Error(c, http.StatusBadGateway, "Storage temporarily unavailable")
+		return
+	}
+
 	code, err := share.Rotate(time.Duration(req.TTLHours) * time.Hour)
 	if errors.Is(err, domain.ErrShareLimit) {
 		rest.Error(c, http.StatusConflict,
