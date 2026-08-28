@@ -167,8 +167,12 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 
 	size, err := h.files.GetFileSize(ctx, req.StorageKey)
 	if err != nil {
+		if errors.Is(err, storage.ErrObjectNotFound) {
+			rest.NotFound(c, "File not found")
+			return
+		}
 		log.Printf("create share: sizing %s: %v", req.StorageKey, err)
-		rest.NotFound(c, "File not found")
+		rest.Error(c, http.StatusBadGateway, "Storage temporarily unavailable")
 		return
 	}
 

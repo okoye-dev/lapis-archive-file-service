@@ -20,7 +20,8 @@ import (
 // fakeStorage implements storage.Storage; it only tracks object sizes since
 // file bytes never flow through the service.
 type fakeStorage struct {
-	sizes map[string]int64
+	sizes   map[string]int64
+	headErr map[string]error // transient (non-not-found) errors for GetFileSize
 }
 
 func newFakeStorage() *fakeStorage {
@@ -35,6 +36,9 @@ func (f *fakeStorage) DeleteFile(_ context.Context, key string) error {
 }
 
 func (f *fakeStorage) GetFileSize(_ context.Context, key string) (int64, error) {
+	if err, ok := f.headErr[key]; ok {
+		return 0, err
+	}
 	size, ok := f.sizes[key]
 	if !ok {
 		return 0, storage.ErrObjectNotFound
@@ -444,5 +448,16 @@ func TestCreateShareRaceRecovers(t *testing.T) {
 	// Losing the create race falls back to rotating the winner, not a 500.
 	if !resp.Rotated {
 		t.Errorf("expected Rotated=true after losing the create race, got %+v", resp)
+	}
+}
+
+func TestCreateShareTransientError(t *testing.T) {
+	files := newFakeStorage()
+	files.headErr = map[string]error{"uuid_x.pdf": fmt.Errorf("s3 unavailable")}
+	router := setupRouter(files, newMemStore(), "")
+
+	w := doJSON(router, "POST", "/shares", gin.H{"storage_key": "uuid_x.pdf"})
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("transient sizing error: %d, want 502", w.Code)
 	}
 }

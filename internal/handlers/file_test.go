@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -38,10 +39,17 @@ func TestGetFile(t *testing.T) {
 		t.Errorf("download=true: code=%d Download=%v", w.Code, resp.Download)
 	}
 
-	// The fake errors when presigning an unseeded key, so the handler 404s.
+	// The fake reports the key missing on HEAD, so the handler 404s.
 	w = doJSON(r, "GET", "/files/uuid_missing.pdf", nil)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("missing key: %d, want 404", w.Code)
+	}
+
+	// A transient HEAD error is a 502, not a misleading 404.
+	files.headErr = map[string]error{"uuid_report.pdf": fmt.Errorf("s3 unavailable")}
+	w = doJSON(r, "GET", "/files/uuid_report.pdf", nil)
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("transient HEAD error: %d, want 502", w.Code)
 	}
 }
 
