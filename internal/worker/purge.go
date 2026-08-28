@@ -21,11 +21,6 @@ type ExpiredShareStore interface {
 	DeleteBySlug(ctx context.Context, slug string) error
 }
 
-// ObjectDeleter deletes a file object from storage.
-type ObjectDeleter interface {
-	DeleteFile(ctx context.Context, key string) error
-}
-
 // PurgedShare is the snapshot written to the audit trail when a share is
 // removed, so "what existed and was deleted" is answerable after the row is
 // gone. Deliberately excludes the code hash/salt.
@@ -39,11 +34,11 @@ type PurgedShare struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
-// PurgeExpiredShares removes shares past their expiry: it deletes the file
-// object, deletes the share row, and records each removal in the audit trail.
+// PurgeExpiredShares removes shares past their expiry: it deletes the share
+// row and records each removal in the audit trail. The object itself is left to
+// the retention worker, which owns object deletion.
 type PurgeExpiredShares struct {
 	Store   ExpiredShareStore
-	Objects ObjectDeleter
 	Auditor audit.Auditor
 }
 
@@ -69,10 +64,6 @@ func (j PurgeExpiredShares) Run(ctx context.Context) error {
 			ExpiresAt:  s.ExpiresAt,
 		}
 
-		if err := j.Objects.DeleteFile(ctx, s.StorageKey); err != nil {
-			log.Printf("purge: delete object %s: %v", s.StorageKey, err)
-			continue
-		}
 		if err := j.Store.DeleteBySlug(ctx, s.Slug); err != nil {
 			log.Printf("purge: delete row %s: %v", s.Slug, err)
 			continue

@@ -79,6 +79,23 @@ func (j PurgeExpiredUploads) Run(ctx context.Context) error {
 				if merr := j.Store.MarkDeleteFailed(ctx, up.StorageKey, derr.Error()); merr != nil {
 					log.Printf("retention: mark failed %s: %v", up.StorageKey, merr)
 				}
+				continue
+			}
+			// DeleteAttempts > 0 means a prior sweep deleted the object but its
+			// row delete failed; record the purge we already made. A never-tried
+			// row with no object is an abandoned presign, dropped silently.
+			if up.DeleteAttempts > 0 {
+				record := PurgedUpload{
+					StorageKey: up.StorageKey,
+					OwnerID:    up.OwnerID,
+					FileName:   up.FileName,
+					SizeBytes:  up.SizeBytes,
+					CreatedAt:  up.CreatedAt,
+				}
+				if aerr := j.Auditor.Record(ctx, "purge_upload", up.StorageKey, record); aerr != nil {
+					log.Printf("retention: audit %s: %v", up.StorageKey, aerr)
+				}
+				deleted++
 			}
 			continue
 		}

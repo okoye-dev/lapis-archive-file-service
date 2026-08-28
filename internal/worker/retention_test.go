@@ -65,9 +65,13 @@ type flakyObjects struct {
 	deleted  []string
 	failOn   map[string]error
 	notFound map[string]bool
+	headErr  map[string]error
 }
 
 func (f *flakyObjects) GetFileSize(_ context.Context, key string) (int64, error) {
+	if err, ok := f.headErr[key]; ok {
+		return 0, err
+	}
 	if f.notFound[key] {
 		return 0, storage.ErrObjectNotFound
 	}
@@ -235,5 +239,61 @@ func TestRetentionSkipsOrphanRows(t *testing.T) {
 	}
 	if len(auditor.actions) != 1 || auditor.actions[0] != "purge_upload" {
 		t.Errorf("audit = %v, want 1 purge_upload (real only)", auditor.actions)
+	}
+}
+
+func TestRetentionTransientHeadError(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeUploadStore{uploads: []*domain.Upload{
+		{StorageKey: "flaky", CreatedAt: now.Add(-4 * 24 * time.Hour)},
+	}}
+	shares := &fakeShareRemover{}
+	objects := &flakyObjects{headErr: map[string]error{"flaky": errors.New("bucket 503")}}
+	auditor := &fakeAuditor{}
+
+	if err := newRetentionJob(store, shares, objects, auditor).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// A transient HEAD failure marks the row for retry and touches nothing else.
+	if len(objects.deleted) != 0 || len(store.deleted) != 0 {
+		t.Errorf("nothing should be deleted on a transient HEAD error: objects=%v rows=%v", objects.deleted, store.deleted)
+	}
+	if store.failed["flaky"] != 1 {
+		t.Errorf("transient error not marked: %v", store.failed)
+	}
+	if len(auditor.actions) != 0 {
+		t.Errorf("no audit expected on transient error: %v", auditor.actions)
+	}
+}
+
+func TestRetentionAuditsAlreadyDeletedOnRetry(t *testing.T) {
+	now := time.Now().UTC()
+	store := &fakeUploadStore{uploads: []*domain.Upload{
+		// A prior sweep deleted the object; only the row delete failed and retried.
+		{StorageKey: "retried", CreatedAt: now.Add(-4 * 24 * time.Hour), DeleteAttempts: 1},
+		// An abandoned presign that never uploaded anything.
+		{StorageKey: "orphan", CreatedAt: now.Add(-4 * 24 * time.Hour)},
+	}}
+	shares := &fakeShareRemover{}
+	objects := &flakyObjects{notFound: map[string]bool{"retried": true, "orphan": true}}
+	auditor := &fakeAuditor{}
+
+	if err := newRetentionJob(store, shares, objects, auditor).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	// Both rows go, but only the already-deleted object is audited as a purge.
+	if len(store.deleted) != 2 {
+		t.Errorf("rows deleted = %v, want both", store.deleted)
+	}
+	var purges int
+	for _, a := range auditor.actions {
+		if a == "purge_upload" {
+			purges++
+		}
+	}
+	if purges != 1 {
+		t.Errorf("purge_upload audits = %d, want 1 (retried only)", purges)
 	}
 }

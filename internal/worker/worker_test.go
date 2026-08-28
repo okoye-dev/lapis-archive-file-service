@@ -48,13 +48,6 @@ func (f *fakeStore) DeleteBySlug(_ context.Context, slug string) error {
 	return nil
 }
 
-type fakeObjects struct{ deleted []string }
-
-func (f *fakeObjects) DeleteFile(_ context.Context, key string) error {
-	f.deleted = append(f.deleted, key)
-	return nil
-}
-
 type fakeAuditor struct{ actions []string }
 
 func (f *fakeAuditor) Record(_ context.Context, action, _ string, _ any) error {
@@ -62,22 +55,20 @@ func (f *fakeAuditor) Record(_ context.Context, action, _ string, _ any) error {
 	return nil
 }
 
-func TestPurgeDeletesAndAudits(t *testing.T) {
+func TestPurgeDeletesRowsAndAudits(t *testing.T) {
 	store := &fakeStore{expired: []*domain.Share{
 		{Slug: "aaaaaaaaaa", StorageKey: "u1_a.txt"},
 		{Slug: "bbbbbbbbbb", StorageKey: "u2_b.txt"},
 	}}
-	objects := &fakeObjects{}
 	auditor := &fakeAuditor{}
 
-	job := PurgeExpiredShares{Store: store, Objects: objects, Auditor: auditor}
+	// Share expiry removes the link and audits, but leaves the object for the
+	// retention worker.
+	job := PurgeExpiredShares{Store: store, Auditor: auditor}
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	if len(objects.deleted) != 2 {
-		t.Errorf("deleted objects = %v, want 2", objects.deleted)
-	}
 	if len(store.deleted) != 2 {
 		t.Errorf("deleted rows = %v, want 2", store.deleted)
 	}

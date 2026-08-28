@@ -65,7 +65,6 @@ func New(cfg *config.Config) (*Server, error) {
 			audit.NewDBRunRecorder(pool).Record,
 			worker.PurgeExpiredShares{
 				Store:   pg,
-				Objects: s3Storage,
 				Auditor: auditor,
 			},
 			worker.PurgeExpiredUploads{
