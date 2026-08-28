@@ -74,7 +74,11 @@ func SetupRoutes(router *gin.Engine, deps Deps) {
 		files.Use(deps.Verifier.Optional())
 	}
 	files.POST("/presign-upload", uploadLimit, limitBody(maxJSONBytes), fileHandler.PresignUpload)
-	files.GET("/:id", fileHandler.GetFile)
+	// GET /:id HEADs the bucket on every call, so throttle it hard: looping
+	// keys would otherwise amplify billed S3 requests. A human downloading
+	// their own files stays well under this.
+	downloadLimit := handlers.RateLimitByIP(20, time.Minute)
+	files.GET("/:id", downloadLimit, fileHandler.GetFile)
 
 	// Multipart lives under its own group: gin cannot mix literal segments
 	// with the :id parameter above.

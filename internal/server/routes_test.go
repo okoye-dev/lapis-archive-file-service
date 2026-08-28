@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/okoye-dev/lapis-archive-file-service/internal/config"
 )
 
 func init() { gin.SetMode(gin.TestMode) }
@@ -59,5 +60,32 @@ func TestLimitBodyCaps(t *testing.T) {
 		if code := postSized(t, r, tc.path, tc.size); code != tc.want {
 			t.Errorf("%s: got %d, want %d", tc.name, code, tc.want)
 		}
+	}
+}
+
+func TestCORSFailsClosed(t *testing.T) {
+	cases := []struct {
+		name     string
+		origins  []string
+		origin   string
+		wantACAO string
+	}{
+		{"unset blocks cross-origin", nil, "https://evil.test", ""},
+		{"wildcard allows any", []string{"*"}, "https://any.test", "*"},
+		{"explicit allows a match", []string{"https://app.test"}, "https://app.test", "https://app.test"},
+		{"explicit blocks others", []string{"https://app.test"}, "https://evil.test", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := gin.New()
+			SetupRoutes(r, Deps{Config: &config.ServerConfig{AllowedOrigins: tc.origins, MaxUploadMB: 1}})
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+			req.Header.Set("Origin", tc.origin)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if got := w.Header().Get("Access-Control-Allow-Origin"); got != tc.wantACAO {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, tc.wantACAO)
+			}
+		})
 	}
 }
